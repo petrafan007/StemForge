@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from 'react';
-import { Check, Copy, Download, FileMusic } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, Copy, Download, FileMusic, Minus, Plus, Printer } from 'lucide-react';
 import type {
   BassTuningId,
   ChordEvent,
@@ -16,8 +16,6 @@ import {
   formatChordSymbol,
   generateAsciiTab,
   getChordVoicing,
-  getStaffPosition,
-  getTuningPreset,
   mapNotesToTab,
   midiToNoteName,
   type ChordVoicing,
@@ -26,6 +24,35 @@ import { buildMusicXml, partLabel, partNotes, resolveTunings, type TuningOptions
 import { beatToTime, quarterBeatsPerMeasure, timeToBeat } from '../audio/timeline';
 import type { NotationPart } from '../types/music';
 import { slugifyFilename, triggerTextDownload } from '../utils/download';
+import { layoutTab, type TabLayoutNote } from '../audio/tabLayout';
+import { keyToFifths } from '../audio/musicXml';
+import { TabStaff } from './TabStaff';
+import { ScoreView, printScore } from './ScoreView';
+
+type TabDetail = '1/8' | '1/16' | '1/32' | '1/8T' | '1/16T';
+const DETAIL_GRID: Record<TabDetail, number> = { '1/8': 0.5, '1/16': 0.25, '1/32': 0.125, '1/8T': 1 / 3, '1/16T': 1 / 6 };
+const PREFS_KEY = 'stemforge_notation_view_v1';
+
+interface ViewPrefs {
+  detail: TabDetail;
+  colWidth: number;
+  follow: boolean;
+  sustain: boolean;
+  minVelocity: number;
+  sheetZoom: number;
+  sheetTab: boolean;
+}
+
+const DEFAULT_PREFS: ViewPrefs = { detail: '1/16', colWidth: 22, follow: true, sustain: true, minVelocity: 0, sheetZoom: 0.9, sheetTab: true };
+
+function loadPrefs(): ViewPrefs {
+  try {
+    const raw = window.localStorage.getItem(PREFS_KEY);
+    return raw ? { ...DEFAULT_PREFS, ...JSON.parse(raw) } : DEFAULT_PREFS;
+  } catch {
+    return DEFAULT_PREFS;
+  }
+}
 
 interface NotationViewProps {
   project: SongProject;
@@ -212,7 +239,28 @@ export function NotationView({
   const instrument: StringInstrument = part === 'bass' ? 'bass' : 'guitar';
   const [mode, setMode] = useState<NotationMode>('tabs');
   const [copiedTab, setCopiedTab] = useState(false);
-  const sheetSvgRef = useRef<SVGSVGElement | null>(null);
+  const [prefs, setPrefsState] = useState<ViewPrefs>(loadPrefs);
+  const setPrefs = (patch: Partial<ViewPrefs>) =>
+    setPrefsState((prev) => {
+      const next = { ...prev, ...patch };
+      try {
+        window.localStorage.setItem(PREFS_KEY, JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  const scoreApi = useRef<{ svgMarkup: () => string | null } | null>(null);
+  const tabWrapRef = useRef<HTMLDivElement | null>(null);
+  const [tabWidth, setTabWidth] = useState(1100);
+
+  useEffect(() => {
+    const el = tabWrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => setTabWidth(Math.round(entries[0].contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [mode]);
 
   const resolved = useMemo(
     () => resolveTunings(project, { guitar: guitarTuning, bass: bassTuning }, tuningOptions, transpose),
@@ -228,13 +276,16 @@ export function NotationView({
     [rawNotes, tuning, transpose, maxFret]
   );
 
+  // Spell chord names like the key signature (flat keys -> Db, Eb...), or as chosen in Settings
+  const useFlats =
+    accidentals === 'flats' || (accidentals === 'auto' && keyToFifths((((project.keyRootPc + transpose) % 12) + 12) % 12, project.keyMode) < 0);
   const transposedChords = useMemo(
     () =>
       project.chords.map((c) => ({
         ...c,
-        displaySymbol: formatChordSymbol(c.rootPc, c.quality, transpose),
+        displaySymbol: formatChordSymbol(c.rootPc, c.quality, transpose, useFlats),
       })),
-    [project.chords, transpose]
+    [project.chords, transpose, useFlats]
   );
 
   const uniqueChordVoicings = useMemo(() => {
@@ -245,7 +296,7 @@ export function NotationView({
       seen.add(c.displaySymbol);
       list.push({
         chord: c,
-        voicing: getChordVoicing(c.rootPc, c.quality, instrument, transpose),
+        voicing: { ...getChordVoicing(c.rootPc, c.quality, instrument, transpose), symbol: c.displaySymbol },
       });
     }
     return list;
@@ -277,14 +328,42 @@ export function NotationView({
   };
 
   const handleDownloadSheetSvg = () => {
-    if (!sheetSvgRef.current) return;
-    const svgXml = new XMLSerializer().serializeToString(sheetSvgRef.current);
-    triggerTextDownload(
-      svgXml,
-      `${slugifyFilename(project.title)}_${part}_sheet.svg`,
-      'image/svg+xml;charset=utf-8'
-    );
+    const markup = scoreApi.current?.svgMarkup();
+    if (!markup) return;
+    triggerTextDownload(markup, `${slugifyFilename(project.title)}_${part}_sheet.svg`, 'image/svg+xml;charset=utf-8');
   };
+
+  const sheetXml = useMemo(
+    () =>
+      mode === 'sheet'
+        ? buildMusicXml(project, { parts: [part], includeTab: prefs.sheetTab, transpose, tunings: resolved, maxFret, accidentals })
+        : '',
+    [mode, project, part, prefs.sheetTab, transpose, resolved, maxFret, accidentals]
+  );
+
+  const tabLayout = useMemo(
+    () =>
+      layoutTab(tabNotes, {
+        grid: DETAIL_GRID[prefs.detail],
+        colWidth: prefs.colWidth,
+        beatsPerMeasure,
+        totalBeats,
+        containerWidth: tabWidth,
+        strings: tuning.openMidi.length,
+        minVelocity: prefs.minVelocity,
+        chords: transposedChords.map((c) => ({ startBeat: c.startBeat, symbol: c.displaySymbol })),
+      }),
+    [tabNotes, prefs.detail, prefs.colWidth, prefs.minVelocity, beatsPerMeasure, totalBeats, tabWidth, tuning, transposedChords]
+  );
+
+  const handleTabNoteClick = useCallback(
+    (n: TabLayoutNote) => {
+      onPreviewNote(n.midi, 0.4);
+      onSeek(Math.max(0, beatToTime(project, n.col * DETAIL_GRID[prefs.detail])));
+    },
+    [onPreviewNote, onSeek, project, prefs.detail]
+  );
+  const handleSeekBeat = useCallback((beat: number) => onSeek(Math.max(0, beatToTime(project, beat))), [onSeek, project]);
 
   /**
    * Exports MusicXML for MuseScore / Guitar Pro / Sibelius etc.
@@ -322,16 +401,6 @@ export function NotationView({
               : [0, 4, 7, 12];
     onPreviewChord(intervals.map((i) => baseMidi + i));
   };
-
-  // Sheet music layout constants
-  const clef: 'treble' | 'bass' = instrument === 'guitar' ? 'treble' : 'bass';
-  const measuresPerStaffLine = 4;
-  const staffLinesCount = Math.ceil(totalMeasures / measuresPerStaffLine);
-  const staffLineWidth = 1040;
-  const staffRowHeight = 148;
-  const clefMargin = 92;
-  const measureWidth = (staffLineWidth - clefMargin - 20) / measuresPerStaffLine;
-  const lineGap = 11; // pixels between adjacent staff lines
 
   return (
     <div className="max-w-[1440px] mx-auto px-4 sm:px-6 py-6 flex flex-col gap-5">
@@ -500,37 +569,79 @@ export function NotationView({
           )}
 
           {mode === 'sheet' && (
-            <button
-              type="button"
-              onClick={handleDownloadSheetSvg}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#0B0D10] bg-amber-500 hover:bg-amber-400 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Export Score (.svg)</span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => void printScore(sheetXml, `${project.title} — ${partName}`)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#0B0D10] bg-amber-500 hover:bg-amber-400 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Print / Save PDF</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadSheetSvg}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>.svg</span>
+              </button>
+            </>
           )}
         </div>
       </div>
 
-      {/* VIEW 1: INTERACTIVE TABLATURE */}
+      {/* VIEW 1: INTERACTIVE TABLATURE (grid-based, no overlaps) */}
       {mode === 'tabs' && (
-        <section
-          aria-label={`${instrument} tablature`}
-          className="border border-white/[0.08] rounded-lg bg-[#13161C] overflow-hidden"
-        >
-          <div className="px-4 py-2.5 border-b border-white/[0.06] flex flex-wrap items-center justify-between gap-2 text-xs">
+        <section aria-label={`${partName} tablature`} className="border border-white/[0.08] rounded-lg bg-[#13161C] overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-white/[0.06] flex flex-wrap items-center justify-between gap-x-5 gap-y-2 text-xs">
             <div className="flex items-center gap-2">
-              <span className="font-semibold text-white">
-                {partName} Tablature
-              </span>
-              <span className="text-slate-600" aria-hidden="true">
-                ·
-              </span>
+              <span className="font-semibold text-white">{partName} Tablature</span>
+              <span className="text-slate-600" aria-hidden="true">·</span>
               <span className="font-mono text-slate-400">
-                {tuning.label} · {tabNotes.length} notes transcribed
+                {tuning.label} · {tabLayout.noteCount} notes
+                {tabLayout.mergedCount > 0 ? ` (${tabLayout.mergedCount} duplicates merged)` : ''}
               </span>
             </div>
-            <span className="text-slate-400">Click any fret number to audition & seek</span>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-slate-400">
+              <label className="flex items-center gap-1.5">
+                <span>Detail</span>
+                <select
+                  aria-label="Tab rhythmic detail"
+                  value={prefs.detail}
+                  onChange={(e) => setPrefs({ detail: e.target.value as TabDetail })}
+                  className="h-7 px-2 rounded bg-[#0B0D10] border border-white/[0.1] font-mono text-slate-200 cursor-pointer"
+                >
+                  <option value="1/8">1/8 notes</option>
+                  <option value="1/16">1/16 notes</option>
+                  <option value="1/32">1/32 notes</option>
+                  <option value="1/8T">1/8 triplets</option>
+                  <option value="1/16T">1/16 triplets</option>
+                </select>
+              </label>
+              <div className="flex items-center gap-1" role="group" aria-label="Tab zoom">
+                <span className="mr-0.5">Zoom</span>
+                <button type="button" aria-label="Zoom out" onClick={() => setPrefs({ colWidth: Math.max(16, prefs.colWidth - 3) })} className="w-6 h-6 inline-flex items-center justify-center rounded bg-[#0B0D10] border border-white/[0.1] hover:text-white cursor-pointer">
+                  <Minus className="w-3 h-3" aria-hidden="true" />
+                </button>
+                <button type="button" aria-label="Zoom in" onClick={() => setPrefs({ colWidth: Math.min(40, prefs.colWidth + 3) })} className="w-6 h-6 inline-flex items-center justify-center rounded bg-[#0B0D10] border border-white/[0.1] hover:text-white cursor-pointer">
+                  <Plus className="w-3 h-3" aria-hidden="true" />
+                </button>
+              </div>
+              <label className="flex items-center gap-1.5" title="Hide very soft notes (usually ghost notes or bleed)">
+                <span>Hide soft notes</span>
+                <input type="range" min={0} max={90} step={5} value={prefs.minVelocity} onChange={(e) => setPrefs({ minVelocity: Number(e.target.value) })} className="studio-fader w-20" aria-label="Hide notes softer than" />
+                <span className="font-mono w-6 text-slate-300">{prefs.minVelocity}</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" className="accent-amber-500" checked={prefs.sustain} onChange={(e) => setPrefs({ sustain: e.target.checked })} />
+                <span>Sustain</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" className="accent-amber-500" checked={prefs.follow} onChange={(e) => setPrefs({ follow: e.target.checked })} />
+                <span>Follow playback</span>
+              </label>
+            </div>
           </div>
 
           {tabNotes.length === 0 ? (
@@ -538,125 +649,20 @@ export function NotationView({
               No pitched notes detected on the {partName.toLowerCase()} stem for this audio file.
             </div>
           ) : (
-            <div className="p-4 sm:p-6 flex flex-col gap-6 overflow-x-auto studio-scroll">
-              {Array.from({ length: Math.ceil(totalMeasures / 4) }).map((_, rowIdx) => {
-                const startMeasure = rowIdx * 4;
-                const endMeasure = Math.min(totalMeasures, startMeasure + 4);
-                const measuresInRow = endMeasure - startMeasure;
-
-                return (
-                  <div
-                    key={rowIdx}
-                    className="min-w-[720px] grid gap-0 border-y border-white/[0.06] py-3"
-                    style={{ gridTemplateColumns: `36px repeat(${measuresInRow}, minmax(0, 1fr))` }}
-                  >
-                    {/* String tuning labels */}
-                    <div className="flex flex-col justify-between pt-5 pb-1 pr-2 border-r border-white/20">
-                      {tuning.stringNames.map((name, sIdx) => (
-                        <div
-                          key={name + sIdx}
-                          className="h-6 flex items-center justify-end font-mono text-xs font-semibold text-slate-400"
-                        >
-                          {name}
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Measures */}
-                    {Array.from({ length: measuresInRow }).map((__, offset) => {
-                      const m = startMeasure + offset;
-                      const mStartBeat = m * beatsPerMeasure;
-                      const mEndBeat = mStartBeat + beatsPerMeasure;
-                      const measureNotes = tabNotes.filter(
-                        (n) => n.startBeat >= mStartBeat - 0.01 && n.startBeat < mEndBeat - 0.01
-                      );
-                      const measureChord = transposedChords.find(
-                        (c) => mStartBeat >= c.startBeat && mStartBeat < c.startBeat + c.durationBeats
-                      );
-                      const isPlayheadHere = currentBeat >= mStartBeat && currentBeat < mEndBeat;
-                      const playheadPct = ((currentBeat - mStartBeat) / beatsPerMeasure) * 100;
-
-                      return (
-                        <div
-                          key={m}
-                          onClick={(e) => {
-                            const rect = e.currentTarget.getBoundingClientRect();
-                            const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-                            onSeek(beatToTime(project, mStartBeat + frac * beatsPerMeasure));
-                          }}
-                          className="relative border-r border-white/20 cursor-pointer hover:bg-white/[0.015]"
-                        >
-                          {/* Measure Header: Bar number + Chord */}
-                          <div className="h-5 px-2 flex items-center justify-between text-[11px] font-mono">
-                            <span className="text-slate-500">{m + 1}</span>
-                            {measureChord && (
-                              <span className="text-amber-400 font-semibold">
-                                {measureChord.displaySymbol}
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Horizontal string lines */}
-                          <div className="relative py-1">
-                            {tuning.stringNames.map((_, sIdx) => (
-                              <div key={sIdx} className="h-6 flex items-center relative">
-                                <div className="w-full h-px bg-white/15" />
-                              </div>
-                            ))}
-
-                            {/* Fret numbers placed accurately along measure timeline */}
-                            {measureNotes.map((note) => {
-                              const leftPct = Math.max(
-                                4,
-                                Math.min(92, ((note.startBeat - mStartBeat) / beatsPerMeasure) * 100)
-                              );
-                              const isNow =
-                                currentBeat >= note.startBeat &&
-                                currentBeat <= note.startBeat + Math.max(0.35, note.durationBeats);
-
-                              return (
-                                <button
-                                  key={note.id}
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onPreviewNote(note.midi, 0.4);
-                                    onSeek(beatToTime(project, note.startBeat));
-                                  }}
-                                  title={`${midiToNoteName(note.midi)} · String ${tuning.stringNames[note.stringIndex]} · Fret ${note.fret}`}
-                                  aria-label={`Fret ${note.fret} on string ${tuning.stringNames[note.stringIndex]} at measure ${m + 1}`}
-                                  style={{
-                                    left: `${leftPct}%`,
-                                    top: `${4 + note.stringIndex * 24 + 2}px`,
-                                  }}
-                                  className={`absolute -translate-x-1/2 min-w-[20px] h-5 px-1 rounded text-[11px] font-mono font-bold flex items-center justify-center transition-colors cursor-pointer ${
-                                    isNow
-                                      ? 'bg-amber-500 text-[#0B0D10]'
-                                      : instrument === 'guitar'
-                                        ? 'bg-[#1B1F27] text-amber-300 border border-amber-500/40 hover:bg-amber-500 hover:text-[#0B0D10]'
-                                        : 'bg-[#1B1F27] text-sky-300 border border-sky-400/40 hover:bg-sky-400 hover:text-[#0B0D10]'
-                                  }`}
-                                >
-                                  {note.fret}
-                                </button>
-                              );
-                            })}
-
-                            {/* Playhead indicator inside active measure */}
-                            {isPlayheadHere && (
-                              <div
-                                aria-hidden="true"
-                                style={{ left: `${playheadPct}%` }}
-                                className="absolute top-0 bottom-0 w-0.5 bg-amber-500 pointer-events-none"
-                              />
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })}
+            <div ref={tabWrapRef} className="px-3 sm:px-5 py-4 overflow-x-auto studio-scroll">
+              <TabStaff
+                layout={tabLayout}
+                tuning={tuning}
+                instrument={instrument}
+                showSustain={prefs.sustain}
+                currentBeat={currentBeat}
+                follow={prefs.follow}
+                onNoteClick={handleTabNoteClick}
+                onSeekBeat={handleSeekBeat}
+              />
+              <p className="mt-2 text-[11px] text-slate-500">
+                Click a fret number to hear it and jump there · click anywhere in a bar to seek · notes snap to the {prefs.detail} grid
+              </p>
             </div>
           )}
         </section>
@@ -740,7 +746,7 @@ export function NotationView({
                   key={voicing.symbol}
                   voicing={voicing}
                   instrument={instrument}
-                  active={activeChord?.displaySymbol === voicing.symbol}
+                  active={activeChord?.displaySymbol === chord.displaySymbol}
                   onClick={() => auditionChord(chord.rootPc, chord.quality)}
                 />
               ))}
@@ -749,283 +755,54 @@ export function NotationView({
         </div>
       )}
 
-      {/* VIEW 3: STANDARD SHEET MUSIC (SVG TREBLE / BASS CLEF STAFF) */}
+      {/* VIEW 3: ENGRAVED SHEET MUSIC (OpenSheetMusicDisplay) */}
       {mode === 'sheet' && (
-        <section
-          aria-label={`${instrument} standard sheet music`}
-          className="border border-white/[0.08] rounded-lg bg-[#13161C] overflow-hidden"
-        >
-          <div className="px-4 py-2.5 border-b border-white/[0.06] flex flex-wrap items-center justify-between gap-2 text-xs">
+        <section aria-label={`${partName} sheet music`} className="border border-white/[0.08] rounded-lg bg-[#13161C] overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-white/[0.06] flex flex-wrap items-center justify-between gap-x-5 gap-y-2 text-xs">
             <div className="flex items-center gap-2">
-              <span className="font-semibold text-white">
-                {instrument === 'guitar'
-                  ? 'Guitar Sheet Music (Treble Clef)'
-                  : 'Bass Sheet Music (Bass Clef)'}
-              </span>
-              <span className="text-slate-600" aria-hidden="true">
-                ·
-              </span>
+              <span className="font-semibold text-white">{partName} Score</span>
+              <span className="text-slate-600" aria-hidden="true">·</span>
               <span className="font-mono text-slate-400">
-                {project.timeSignature[0]}/{project.timeSignature[1]} · {project.bpm} BPM
+                {project.timeSignature[0]}/{project.timeSignature[1]} · {Math.round(project.bpm)} BPM · {tuning.label}
               </span>
             </div>
-            <span className="text-slate-400">Click any notehead to hear pitch</span>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-slate-400">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" className="accent-amber-500" checked={prefs.sheetTab} onChange={(e) => setPrefs({ sheetTab: e.target.checked })} />
+                <span>TAB staff</span>
+              </label>
+              <div className="flex items-center gap-1" role="group" aria-label="Score zoom">
+                <span className="mr-0.5">Zoom</span>
+                <button type="button" aria-label="Zoom out" onClick={() => setPrefs({ sheetZoom: Math.max(0.5, Math.round((prefs.sheetZoom - 0.1) * 10) / 10) })} className="w-6 h-6 inline-flex items-center justify-center rounded bg-[#0B0D10] border border-white/[0.1] hover:text-white cursor-pointer">
+                  <Minus className="w-3 h-3" aria-hidden="true" />
+                </button>
+                <span className="font-mono w-9 text-center text-slate-300">{Math.round(prefs.sheetZoom * 100)}%</span>
+                <button type="button" aria-label="Zoom in" onClick={() => setPrefs({ sheetZoom: Math.min(1.6, Math.round((prefs.sheetZoom + 0.1) * 10) / 10) })} className="w-6 h-6 inline-flex items-center justify-center rounded bg-[#0B0D10] border border-white/[0.1] hover:text-white cursor-pointer">
+                  <Plus className="w-3 h-3" aria-hidden="true" />
+                </button>
+              </div>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" className="accent-amber-500" checked={prefs.follow} onChange={(e) => setPrefs({ follow: e.target.checked })} />
+                <span>Follow playback</span>
+              </label>
+            </div>
           </div>
-
-          <div className="p-4 sm:p-6 overflow-x-auto studio-scroll bg-[#0E1015]">
-            <svg
-              ref={sheetSvgRef}
-              width={staffLineWidth}
-              height={staffLinesCount * staffRowHeight + 30}
-              viewBox={`0 0 ${staffLineWidth} ${staffLinesCount * staffRowHeight + 30}`}
-              className="block mx-auto bg-[#F8FAFC] text-slate-900 rounded-md shadow-sm"
-            >
-              {/* Title on engraved sheet */}
-              <text
-                x={staffLineWidth / 2}
-                y={24}
-                textAnchor="middle"
-                fill="#0F172A"
-                fontSize={15}
-                fontWeight={700}
-                fontFamily="Plus Jakarta Sans, sans-serif"
-              >
-                {project.title} — {partName} Score
-              </text>
-
-              {Array.from({ length: staffLinesCount }).map((_, sysIdx) => {
-                const baseTop = 62 + sysIdx * staffRowHeight;
-                const bottomLineY = baseTop + 4 * lineGap;
-                const startM = sysIdx * measuresPerStaffLine;
-                const endM = Math.min(totalMeasures, startM + measuresPerStaffLine);
-                const countM = endM - startM;
-
-                return (
-                  <g key={sysIdx}>
-                    {/* 5 Horizontal Staff Lines */}
-                    {[0, 1, 2, 3, 4].map((lineIdx) => (
-                      <line
-                        key={lineIdx}
-                        x1={24}
-                        y1={baseTop + lineIdx * lineGap}
-                        x2={clefMargin + countM * measureWidth}
-                        y2={baseTop + lineIdx * lineGap}
-                        stroke="#334155"
-                        strokeWidth={1}
-                      />
-                    ))}
-
-                    {/* Left system barline */}
-                    <line
-                      x1={24}
-                      y1={baseTop}
-                      x2={24}
-                      y2={bottomLineY}
-                      stroke="#0F172A"
-                      strokeWidth={1.6}
-                    />
-
-                    {/* Clef Symbol */}
-                    <text
-                      x={30}
-                      y={clef === 'treble' ? baseTop + 36 : baseTop + 31}
-                      fill="#0F172A"
-                      fontSize={clef === 'treble' ? 40 : 34}
-                      fontFamily="Georgia, serif"
-                    >
-                      {clef === 'treble' ? '𝄞' : '𝄢'}
-                    </text>
-
-                    {/* Time signature on first system */}
-                    {sysIdx === 0 && (
-                      <g
-                        fontFamily="Plus Jakarta Sans, sans-serif"
-                        fontWeight={700}
-                        fontSize={14}
-                        fill="#0F172A"
-                      >
-                        <text x={70} y={baseTop + 17} textAnchor="middle">
-                          {project.timeSignature[0]}
-                        </text>
-                        <text x={70} y={baseTop + 39} textAnchor="middle">
-                          {project.timeSignature[1]}
-                        </text>
-                      </g>
-                    )}
-
-                    {/* Measures in this system */}
-                    {Array.from({ length: countM }).map((__, offset) => {
-                      const m = startM + offset;
-                      const mX = clefMargin + offset * measureWidth;
-                      const mStartBeat = m * beatsPerMeasure;
-                      const mEndBeat = mStartBeat + beatsPerMeasure;
-
-                      const mNotes = tabNotes.filter(
-                        (n) => n.startBeat >= mStartBeat - 0.01 && n.startBeat < mEndBeat - 0.01
-                      );
-                      const mChord = transposedChords.find(
-                        (c) => mStartBeat >= c.startBeat && mStartBeat < c.startBeat + c.durationBeats
-                      );
-                      const isPlayheadHere = currentBeat >= mStartBeat && currentBeat < mEndBeat;
-                      const playheadX =
-                        mX + 12 + ((currentBeat - mStartBeat) / beatsPerMeasure) * (measureWidth - 24);
-
-                      return (
-                        <g key={m}>
-                          {/* Barline at right edge of measure */}
-                          <line
-                            x1={mX + measureWidth}
-                            y1={baseTop}
-                            x2={mX + measureWidth}
-                            y2={bottomLineY}
-                            stroke="#0F172A"
-                            strokeWidth={m === totalMeasures - 1 ? 2.5 : 1.1}
-                          />
-
-                          {/* Measure number & Chord symbol above staff */}
-                          <text
-                            x={mX + 4}
-                            y={baseTop - 16}
-                            fill="#64748B"
-                            fontSize={10}
-                            fontFamily="JetBrains Mono, monospace"
-                          >
-                            {m + 1}
-                          </text>
-                          {mChord && (
-                            <text
-                              x={mX + 26}
-                              y={baseTop - 15}
-                              fill="#B45309"
-                              fontSize={12}
-                              fontWeight={700}
-                              fontFamily="Plus Jakarta Sans, sans-serif"
-                            >
-                              {mChord.displaySymbol}
-                            </text>
-                          )}
-
-                          {/* Notes */}
-                          {mNotes.map((note) => {
-                            const pos = getStaffPosition(note.midi, clef);
-                            const noteX =
-                              mX +
-                              18 +
-                              ((note.startBeat - mStartBeat) / beatsPerMeasure) *
-                                (measureWidth - 32);
-                            const noteY = bottomLineY - pos.lineOffsetFromBottom * lineGap;
-                            const isOpenHead = note.durationBeats >= 1.75;
-                            const isEighth = note.durationBeats <= 0.6;
-                            const stemDown = pos.lineOffsetFromBottom >= 2;
-                            const isActive =
-                              currentBeat >= note.startBeat &&
-                              currentBeat <= note.startBeat + Math.max(0.35, note.durationBeats);
-
-                            // Ledger lines above or below staff
-                            const ledgers: number[] = [];
-                            if (pos.lineOffsetFromBottom < -0.5) {
-                              for (let l = -1; l >= Math.ceil(pos.lineOffsetFromBottom); l--) {
-                                ledgers.push(bottomLineY - l * lineGap);
-                              }
-                            } else if (pos.lineOffsetFromBottom > 4.5) {
-                              for (let l = 5; l <= Math.floor(pos.lineOffsetFromBottom); l++) {
-                                ledgers.push(bottomLineY - l * lineGap);
-                              }
-                            }
-
-                            const noteColor = isActive ? '#D97706' : '#0F172A';
-
-                            return (
-                              <g
-                                key={note.id}
-                                className="cursor-pointer"
-                                onClick={() => {
-                                  onPreviewNote(note.midi, 0.4);
-                                  onSeek(beatToTime(project, note.startBeat));
-                                }}
-                              >
-                                {ledgers.map((ly, idx) => (
-                                  <line
-                                    key={idx}
-                                    x1={noteX - 10}
-                                    y1={ly}
-                                    x2={noteX + 10}
-                                    y2={ly}
-                                    stroke="#475569"
-                                    strokeWidth={1}
-                                  />
-                                ))}
-
-                                {pos.accidental && (
-                                  <text
-                                    x={noteX - 14}
-                                    y={noteY + 4}
-                                    fill={noteColor}
-                                    fontSize={12}
-                                    fontWeight={700}
-                                    fontFamily="Georgia, serif"
-                                  >
-                                    ♯
-                                  </text>
-                                )}
-
-                                <ellipse
-                                  cx={noteX}
-                                  cy={noteY}
-                                  rx={5.2}
-                                  ry={3.8}
-                                  transform={`rotate(-18 ${noteX} ${noteY})`}
-                                  fill={isOpenHead ? '#F8FAFC' : noteColor}
-                                  stroke={noteColor}
-                                  strokeWidth={1.6}
-                                />
-
-                                {/* Stem */}
-                                <line
-                                  x1={stemDown ? noteX - 4.8 : noteX + 4.8}
-                                  y1={noteY}
-                                  x2={stemDown ? noteX - 4.8 : noteX + 4.8}
-                                  y2={stemDown ? noteY + 28 : noteY - 28}
-                                  stroke={noteColor}
-                                  strokeWidth={1.3}
-                                />
-
-                                {/* Eighth note flag */}
-                                {isEighth && (
-                                  <path
-                                    d={
-                                      stemDown
-                                        ? `M ${noteX - 4.8} ${noteY + 28} Q ${noteX + 4} ${noteY + 22} ${noteX + 2} ${noteY + 14}`
-                                        : `M ${noteX + 4.8} ${noteY - 28} Q ${noteX + 13} ${noteY - 22} ${noteX + 11} ${noteY - 14}`
-                                    }
-                                    fill="none"
-                                    stroke={noteColor}
-                                    strokeWidth={1.5}
-                                  />
-                                )}
-                              </g>
-                            );
-                          })}
-
-                          {/* Synchronized Playhead on Staff */}
-                          {isPlayheadHere && (
-                            <line
-                              x1={playheadX}
-                              y1={baseTop - 10}
-                              x2={playheadX}
-                              y2={bottomLineY + 10}
-                              stroke="#D97706"
-                              strokeWidth={2}
-                            />
-                          )}
-                        </g>
-                      );
-                    })}
-                  </g>
-                );
-              })}
-            </svg>
-          </div>
+          {rawNotes.length === 0 ? (
+            <div className="p-10 text-center text-sm text-slate-400">No pitched notes detected on the {partName.toLowerCase()} stem.</div>
+          ) : (
+            <div className="p-3 sm:p-5 bg-[#0E1015]">
+              <ScoreView
+                xml={sheetXml}
+                zoom={prefs.sheetZoom}
+                beatsPerMeasure={beatsPerMeasure}
+                currentBeat={currentBeat}
+                follow={prefs.follow}
+                onSeekBeat={handleSeekBeat}
+                onReady={(api) => (scoreApi.current = api)}
+              />
+              <p className="mt-2 text-[11px] text-slate-500">Click a bar to jump there · notes are quantized to 16ths · chord symbols above the staff</p>
+            </div>
+          )}
         </section>
       )}
     </div>

@@ -28,6 +28,10 @@ export default defineConfig(() => {
         },
       },
     ],
+    build: {
+      // The sheet-music engraver (OpenSheetMusicDisplay) is a lazily loaded ~1.4 MB chunk.
+      chunkSizeWarningLimit: 1600,
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

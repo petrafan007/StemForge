@@ -38,8 +38,19 @@ export interface MusicXmlScoreInput {
   /** @deprecated use timeSignature */
   beatsPerMeasure?: number;
   accidentals?: 'auto' | 'sharps' | 'flats';
+  /** Chord symbols written above the first part (quarter-note beats). */
+  chords?: Array<{ startBeat: number; rootPc: number; quality: 'maj' | 'min' | '7' | 'maj7' | 'm7' | '5' }>;
   parts: MusicXmlPartInput[];
 }
+
+const HARMONY_KIND: Record<string, { kind: string; text: string }> = {
+  maj: { kind: 'major', text: '' },
+  min: { kind: 'minor', text: 'm' },
+  '7': { kind: 'dominant', text: '7' },
+  maj7: { kind: 'major-seventh', text: 'maj7' },
+  m7: { kind: 'minor-seventh', text: 'm7' },
+  '5': { kind: 'power', text: '5' },
+};
 
 const DIVISIONS = 4; // divisions per quarter note -> 16th-note resolution
 const ALLOWED_DURATIONS = [16, 12, 8, 6, 4, 3, 2, 1];
@@ -190,15 +201,21 @@ function renderSegments(
   staff: number,
   voice: number,
   useFlats: boolean,
-  withTechnical: boolean
+  withTechnical: boolean,
+  harmonies: Array<{ pos: number; xml: string }> = []
 ): string[] {
+  const pending = [...harmonies].sort((a, b) => a.pos - b.pos);
   if (segs === 'empty') {
     return [
+      ...pending.map((h) => h.xml),
       `<note><rest measure="yes"/><duration>${mLen}</duration><voice>${voice}</voice><staff>${staff}</staff></note>`,
     ];
   }
   const out: string[] = [];
+  let cursor = 0;
   for (const seg of segs) {
+    while (pending.length && pending[0].pos < cursor + seg.dur) out.push(pending.shift()!.xml);
+    cursor += seg.dur;
     const t = TYPE_FOR_DURATION[seg.dur];
     const typeXml = `<type>${t.type}</type>${'<dot/>'.repeat(t.dots)}`;
     if (!seg.pitches) {
@@ -223,6 +240,13 @@ function renderSegments(
     });
   }
   return out;
+}
+
+function harmonyXml(rootPc: number, quality: string, useFlats: boolean, staff: number): string {
+  const pc = ((rootPc % 12) + 12) % 12;
+  const [step, alter] = (useFlats ? FLAT_SPELLING : SHARP_SPELLING)[pc];
+  const k = HARMONY_KIND[quality] ?? HARMONY_KIND.maj;
+  return `<harmony><root><root-step>${step}</root-step>${alter ? `<root-alter>${alter}</root-alter>` : ''}</root><kind text="${k.text}">${k.kind}</kind><staff>${staff}</staff></harmony>`;
 }
 
 const STEP_NAMES = ['C', 'C', 'D', 'D', 'E', 'F', 'F', 'G', 'G', 'A', 'A', 'B'];
@@ -317,6 +341,14 @@ export function encodeMusicXml(score: MusicXmlScoreInput): string {
   const bpm = Math.round(Math.max(20, Math.min(300, score.bpm || 120)));
 
   const plans = score.parts.map((p) => ({ part: p, staves: planPart(p) }));
+  const chordStarts: Array<{ div: number; rootPc: number; quality: string }> = [];
+  for (const c of [...(score.chords ?? [])].sort((a, b) => a.startBeat - b.startBeat)) {
+    const div = Math.max(0, Math.round(c.startBeat * DIVISIONS));
+    const prev = chordStarts[chordStarts.length - 1];
+    if (prev && prev.rootPc === c.rootPc && prev.quality === c.quality) continue;
+    if (prev && prev.div === div) chordStarts.pop();
+    chordStarts.push({ div, rootPc: c.rootPc, quality: c.quality });
+  }
   let lastDiv = mLen;
   for (const { staves } of plans) {
     for (const s of staves) {
@@ -364,7 +396,13 @@ export function encodeMusicXml(score: MusicXmlScoreInput): string {
         staves.forEach((s, sIdx) => {
           if (sIdx > 0) body.push(`<backup><duration>${mLen}</duration></backup>`);
           const segs = segmentsForMeasure(s.items, m * mLen, mLen);
-          body.push(...renderSegments(segs, mLen, s.staff, s.voice, useFlats, s.technical));
+          const harmonies =
+            partIdx === 0 && sIdx === 0
+              ? chordStarts
+                  .filter((c) => c.div >= m * mLen && c.div < (m + 1) * mLen)
+                  .map((c) => ({ pos: c.div - m * mLen, xml: harmonyXml(c.rootPc, c.quality, useFlats, s.staff) }))
+              : [];
+          body.push(...renderSegments(segs, mLen, s.staff, s.voice, useFlats, s.technical, harmonies));
         });
         if (m === totalMeasures - 1) {
           body.push('<barline location="right"><bar-style>light-heavy</bar-style></barline>');

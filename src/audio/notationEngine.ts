@@ -29,8 +29,10 @@ export function transposePitchClass(pc: number, semitones: number): number {
   return (((pc + semitones) % 12) + 12) % 12;
 }
 
-export function formatChordSymbol(rootPc: number, quality: ChordEvent['quality'], transpose = 0): string {
-  const root = NOTE_NAMES_SHARP[transposePitchClass(rootPc, transpose)];
+export const NOTE_NAMES_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'] as const;
+
+export function formatChordSymbol(rootPc: number, quality: ChordEvent['quality'], transpose = 0, useFlats = false): string {
+  const root = (useFlats ? NOTE_NAMES_FLAT : NOTE_NAMES_SHARP)[transposePitchClass(rootPc, transpose)];
   switch (quality) {
     case 'maj':
       return root;
@@ -288,56 +290,57 @@ export function mapNotesToTab(
 }
 
 /**
- * Generates clean monospace ASCII tablature grouped by 4-beat measures.
+ * Generates monospace ASCII tablature on a rhythmic grid (16th notes by default). Notes are snapped
+ * to the grid and duplicates on the same string merge, so columns never overwrite each other;
+ * each column is 3 characters wide so two-digit frets stay aligned.
  */
 export function generateAsciiTab(
   tabNotes: TabNoteEvent[],
   tuning: TuningPreset,
   title: string,
   bpm: number,
-  beatsPerMeasure = 4
+  beatsPerMeasure = 4,
+  stepsPerBeat = 4
 ): string {
-  const maxBeat = tabNotes.reduce((max, n) => Math.max(max, n.startBeat + 0.5), beatsPerMeasure * 2);
-  const totalMeasures = Math.max(1, Math.ceil(maxBeat / beatsPerMeasure));
-  const stepsPerBeat = 2; // 8th-note columns
-  const colsPerMeasure = beatsPerMeasure * stepsPerBeat;
-
+  const steps = Math.max(1, Math.round(beatsPerMeasure * stepsPerBeat));
+  const cell = 3;
+  // snap + merge (keep the loudest note per string and column)
+  const cells = new Map<string, TabNoteEvent>();
+  let lastCol = 0;
+  for (const n of tabNotes) {
+    const col = Math.max(0, Math.round(n.startBeat * stepsPerBeat));
+    const key = `${n.stringIndex}:${col}`;
+    const prev = cells.get(key);
+    if (!prev || n.velocity > prev.velocity) cells.set(key, n);
+    lastCol = Math.max(lastCol, col);
+  }
+  const totalMeasures = Math.max(1, Math.ceil((lastCol + 1) / steps));
+  const measuresPerRow = stepsPerBeat >= 4 ? 2 : 4;
+  const labelWidth = Math.max(...tuning.stringNames.map((n) => n.length)) + 1;
   const lines: string[] = [
     `${title} — ${tuning.label}`,
-    `Tempo: ${Math.round(bpm)} BPM | Time: ${beatsPerMeasure}/4`,
+    `Tempo: ${Math.round(bpm)} BPM | ${beatsPerMeasure} beats per bar | one column = 1/${stepsPerBeat * 4} note`,
     '',
   ];
 
-  const measuresPerRow = 4;
   for (let rowStart = 0; rowStart < totalMeasures; rowStart += measuresPerRow) {
     const rowEnd = Math.min(totalMeasures, rowStart + measuresPerRow);
-    const stringRows = tuning.stringNames.map((name) => `${name.padEnd(2, ' ')}|`);
-
-    for (let m = rowStart; m < rowEnd; m++) {
-      const mStart = m * beatsPerMeasure;
-      const grid: string[][] = tuning.stringNames.map(() =>
-        Array.from({ length: colsPerMeasure }, () => '--')
-      );
-
-      for (const note of tabNotes) {
-        if (note.startBeat >= mStart - 0.01 && note.startBeat < mStart + beatsPerMeasure - 0.01) {
-          const col = Math.min(
-            colsPerMeasure - 1,
-            Math.max(0, Math.round((note.startBeat - mStart) * stepsPerBeat))
-          );
-          const fretStr = note.fret >= 10 ? String(note.fret) : `${note.fret}-`;
-          grid[note.stringIndex][col] = fretStr;
+    let numbers = ' '.repeat(labelWidth + 1);
+    for (let m = rowStart; m < rowEnd; m++) numbers += String(m + 1).padEnd(steps * cell + 1, ' ');
+    lines.push(numbers.trimEnd());
+    for (let s = 0; s < tuning.stringNames.length; s++) {
+      let line = `${tuning.stringNames[s].padEnd(labelWidth, ' ')}|`;
+      for (let m = rowStart; m < rowEnd; m++) {
+        for (let c = 0; c < steps; c++) {
+          const note = cells.get(`${s}:${m * steps + c}`);
+          line += note ? String(note.fret).padEnd(cell, '-') : '-'.repeat(cell);
         }
+        line += '|';
       }
-
-      for (let s = 0; s < tuning.stringNames.length; s++) {
-        stringRows[s] += `${grid[s].join('')}|`;
-      }
+      lines.push(line);
     }
-
-    lines.push(...stringRows, '');
+    lines.push('');
   }
-
   return lines.join('\n');
 }
 

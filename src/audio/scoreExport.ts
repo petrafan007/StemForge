@@ -58,6 +58,7 @@ export interface ScoreExportOptions {
   tunings: ResolvedTunings;
   maxFret: number;
   accidentals: 'auto' | 'sharps' | 'flats';
+  includeChords?: boolean;
 }
 
 export function buildMusicXml(project: SongProject, opts: ScoreExportOptions): string {
@@ -101,6 +102,7 @@ export function buildMusicXml(project: SongProject, opts: ScoreExportOptions): s
     keyMode: project.keyMode,
     timeSignature: project.timeSignature,
     accidentals: opts.accidentals,
+    chords: opts.includeChords === false ? [] : project.chords.map((c) => ({ startBeat: c.startBeat, rootPc: (((c.rootPc + t) % 12) + 12) % 12, quality: c.quality })),
     parts,
   });
 }
