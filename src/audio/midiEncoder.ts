@@ -134,6 +134,8 @@ export interface MidiTrackInput {
  */
 export function encodeMidiFile(options: {
   bpm: number;
+  /** Tempo map (beat -> BPM from that beat on); overrides bpm so the file follows the real tempo. */
+  tempoChanges?: Array<{ beat: number; bpm: number }>;
   timeSignature?: [number, number];
   ticksPerQuarter?: number;
   tracks: MidiTrackInput[];
@@ -143,22 +145,15 @@ export function encodeMidiFile(options: {
   const ppq = options.ticksPerQuarter ?? 480;
   const bpm = Math.max(30, Math.min(300, options.bpm || 120));
   const [num, den] = options.timeSignature ?? [4, 4];
-  const tempoMicros = Math.round(60_000_000 / bpm);
+  const tempoEvent = (tick: number, tempoBpm: number): RawMidiEvent => {
+    const micros = Math.max(1, Math.min(0xffffff, Math.round(60_000_000 / Math.max(10, Math.min(600, tempoBpm)))));
+    return { tick, order: 0, bytes: [0xff, 0x51, 0x03, (micros >>> 16) & 0xff, (micros >>> 8) & 0xff, micros & 0xff] };
+  };
+  const changes = options.tempoChanges?.length ? options.tempoChanges : [{ beat: 0, bpm }];
 
   // Tempo & Time Signature master track (Track 0)
   const tempoEvents: RawMidiEvent[] = [
-    {
-      tick: 0,
-      order: 0,
-      bytes: [
-        0xff,
-        0x51,
-        0x03,
-        (tempoMicros >>> 16) & 0xff,
-        (tempoMicros >>> 8) & 0xff,
-        tempoMicros & 0xff,
-      ],
-    },
+    ...changes.map((c, i) => tempoEvent(i === 0 ? 0 : Math.max(0, Math.round(c.beat * ppq)), c.bpm)),
     {
       tick: 0,
       order: 0,

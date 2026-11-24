@@ -401,6 +401,30 @@ export function SettingsView({
         </FieldGrid>
       </Section>
 
+      <Section title="Playback Sync" description="Keeps the moving playhead and the highlighted tab notes in step with what you hear.">
+        <FieldGrid>
+          <Field
+            label="Highlight delay (ms)"
+            hint="The delay of your audio device is measured and compensated automatically. If notes still light up before you hear them (Bluetooth headphones add 100–300 ms), raise this; if they light up late, lower it."
+          >
+            <div className="flex items-center gap-2">
+              <NumberInput
+                ariaLabel="Highlight delay in milliseconds"
+                value={settings.playback.avSyncMs}
+                min={-300}
+                max={600}
+                step={5}
+                onChange={(v) => set((s) => ({ ...s, playback: { ...s.playback, avSyncMs: Math.round(v) } }))}
+                className="w-24"
+              />
+              <button type="button" className={secondaryButtonClass} onClick={() => set((s) => ({ ...s, playback: { ...s.playback, avSyncMs: 0 } }))}>
+                Reset
+              </button>
+            </div>
+          </Field>
+        </FieldGrid>
+      </Section>
+
       <Section title="Desktop App" description="Applies to StemForge.exe (the desktop shortcut). Takes effect the next time you open StemForge.">
         <FieldGrid>
           <Toggle

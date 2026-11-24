@@ -173,14 +173,25 @@ def demucs_model(name: str):
 
 
 def loaded_models() -> List[str]:
-    return sorted(_models.keys())
+    from . import beats
+
+    names = sorted(_models.keys())
+    if _roformer is not None:
+        names.append("bs_roformer_sw")
+    if beats.loaded():
+        names.append("beat_this")
+    return names
 
 
 def unload_models() -> bool:
+    global _adtof_model, _roformer
+    from . import beats
+
     with _models_lock:
-        had = bool(_models)
+        had = bool(_models) or _roformer is not None
         _models.clear()
-    global _adtof_model
+        _roformer = None
+    had = beats.unload() or had
     _adtof_model = None
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -310,6 +321,92 @@ def run_demucs(name: str, wav: torch.Tensor, shifts: int, progress: Progress, lo
     return {src: out[i] for i, src in enumerate(model.sources)}
 
 
+ROFORMER_SLUG = "roformer-model-bs-roformer-sw-by-jarredou"
+_roformer: Optional[Tuple[Any, Any]] = None
+
+
+def roformer_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / "models" / "roformer" / ROFORMER_SLUG
+
+
+def roformer_available() -> bool:
+    try:
+        import bs_roformer  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    d = roformer_dir()
+    return (d / "BS-Rofo-SW-Fixed.ckpt").is_file() and (d / "BS-Rofo-SW-Fixed.yaml").is_file()
+
+
+def roformer_model():
+    """BS-RoFormer-SW (6 stems: bass, drums, other, vocals, guitar, piano). Weights load tensors-only."""
+    global _roformer
+    with _models_lock:
+        if _roformer is not None:
+            return _roformer
+        import yaml
+        from bs_roformer.inference import SafeLoaderWithTuple
+        from bs_roformer.utils import get_model_from_config
+        from ml_collections import ConfigDict
+
+        d = roformer_dir()
+        with open(d / "BS-Rofo-SW-Fixed.yaml", encoding="utf-8") as fh:
+            config = ConfigDict(yaml.load(fh, Loader=SafeLoaderWithTuple))
+        model = get_model_from_config("bs_roformer", config)
+        state = torch.load(d / "BS-Rofo-SW-Fixed.ckpt", map_location="cpu", weights_only=True)
+        model.load_state_dict(state)
+        model.to(get_device()).eval()
+        _roformer = (model, config)
+        return _roformer
+
+
+def run_roformer(mix: np.ndarray, progress: Progress, lo: float, hi: float, overlap: int = 0) -> Dict[str, np.ndarray]:
+    """Chunked overlap-add inference (same scheme as bs_roformer.utils.demix_track) with progress + cancel.
+    The output is accumulated in system RAM so long songs don't need extra VRAM."""
+    model, config = roformer_model()
+    dev = get_device()
+    C = int(config.inference.chunk_size)
+    step = C // max(1, int(overlap or config.inference.num_overlap))
+    fade = C // 10
+    border = C - step
+    x = torch.from_numpy(mix.astype(np.float32))
+    padded = x.shape[1] > 2 * border
+    if padded:
+        x = torch.nn.functional.pad(x, (border, border), mode="reflect")
+    window = torch.ones(C)
+    window[:fade] = torch.linspace(0, 1, fade)
+    window[-fade:] = torch.linspace(1, 0, fade)
+    names = list(config.training.instruments)
+    total = x.shape[1]
+    result = torch.zeros((len(names), 2, total), dtype=torch.float32)
+    counter = torch.zeros(total, dtype=torch.float32)
+    n_chunks = max(1, (total + step - 1) // step)
+    i = k = 0
+    with torch.no_grad(), torch.autocast("cuda", enabled=dev == "cuda"):
+        while i < total:
+            part = x[:, i : i + C]
+            length = part.shape[-1]
+            if length < C:
+                mode_pad = "reflect" if length > C // 2 + 1 else "constant"
+                part = torch.nn.functional.pad(part, (0, C - length), mode=mode_pad)
+            out = model(part.unsqueeze(0).to(dev))[0].float().cpu()
+            w = window.clone()
+            if i == 0:
+                w[:fade] = 1
+            elif i + C >= total:
+                w[-fade:] = 1
+            result[..., i : i + length] += out[..., :length] * w[:length]
+            counter[..., i : i + length] += w[:length]
+            i += step
+            k += 1
+            progress.set_percent(lo + (hi - lo) * min(1.0, k / n_chunks))
+    est = (result / counter.clamp_min(1e-8)).numpy()
+    est = np.nan_to_num(est)
+    if padded:
+        est = est[..., border:-border]
+    return {name: est[j].astype(np.float32) for j, name in enumerate(names)}
+
+
 def split_center_sides(stereo: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
     """
     Splits a stereo guitar stem into a center part (usually the lead guitar / solos) and the
@@ -334,6 +431,21 @@ def split_center_sides(stereo: np.ndarray) -> Tuple[np.ndarray, np.ndarray, floa
 
 
 def separate(mix: np.ndarray, opts: ProcessOptions, progress: Progress) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    """balanced / high: BS-RoFormer-SW when installed (much cleaner guitar and bass stems, which the
+    tab transcriber depends on); otherwise, and in fast mode, Demucs."""
+    if opts.quality in ("balanced", "high") and roformer_available():
+        try:
+            return separate_roformer(mix, opts, progress)
+        except torch.cuda.OutOfMemoryError:
+            raise
+        except JobCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("BS-RoFormer failed, falling back to Demucs: %s", exc)
+    return separate_demucs(mix, opts, progress)
+
+
+def separate_demucs(mix: np.ndarray, opts: ProcessOptions, progress: Progress) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
     wav = torch.from_numpy(mix)
     info: Dict[str, Any] = {"quality": opts.quality}
     if opts.quality == "fast":
@@ -361,6 +473,34 @@ def separate(mix: np.ndarray, opts: ProcessOptions, progress: Progress) -> Tuple
         "keyboards": (s6["piano"] if opts.keyboards_mode == "piano" else s6["piano"] + s6["other"]).numpy(),
     }
 
+    if opts.split_guitars:
+        progress.set("Splitting lead and rhythm guitars", 65)
+        center, sides, ratio = split_center_sides(stems["guitar"])
+        info["guitarSideRatio"] = round(ratio, 3)
+        if ratio >= 0.12:
+            stems["lead"] = center
+            stems["guitar"] = sides
+            info["guitarSplit"] = True
+        else:
+            info["guitarSplit"] = False
+            info["guitarSplitNote"] = "Guitars are not panned wide enough to split lead from rhythm."
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return {k: v.astype(np.float32) for k, v in stems.items()}, info
+
+
+def separate_roformer(mix: np.ndarray, opts: ProcessOptions, progress: Progress) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    """BS-RoFormer-SW separation (much cleaner guitar stem than htdemucs_6s)."""
+    overlap = 4 if opts.quality == "high" else 2
+    r = run_roformer(mix, progress, 8, 62, overlap)
+    stems: Dict[str, np.ndarray] = {
+        "vocals": r["vocals"],
+        "bass": r["bass"],
+        "drums": r["drums"],
+        "guitar": r["guitar"],
+        "keyboards": r["piano"] if opts.keyboards_mode == "piano" else r["piano"] + r["other"],
+    }
+    info: Dict[str, Any] = {"quality": opts.quality, "models": ["bs_roformer_sw"], "overlap": overlap}
     if opts.split_guitars:
         progress.set("Splitting lead and rhythm guitars", 65)
         center, sides, ratio = split_center_sides(stems["guitar"])
@@ -460,6 +600,66 @@ def gate_notes(notes: List[List[float]], env: np.ndarray, hop_sec: float, gate_d
         if seg.size and float(np.mean(seg)) >= floor:
             kept.append(n)
     return kept
+
+
+# --------------------------------------------------------------------------- guitar / bass (tab) transcription
+
+STRING_STEMS = ("guitar", "lead", "bass")
+# other stems whose leakage must not turn into notes on each string stem
+BLEED_SOURCES = {
+    "guitar": ("bass", "vocals", "lead"),
+    "lead": ("guitar", "bass", "vocals"),
+    "bass": ("guitar", "lead", "drums"),
+}
+
+
+def load_stem_22k(path: Path) -> List[np.ndarray]:
+    import librosa
+
+    from . import riff
+
+    audio, sr = read_stem(path)
+    return [librosa.resample(np.ascontiguousarray(audio[c]), orig_sr=sr, target_sr=riff.SR) for c in range(audio.shape[0])]
+
+
+def transcribe_strings(
+    stems_dir: Path,
+    stems: List[str],
+    opts: ProcessOptions,
+    fallback: Dict[str, List[List[float]]],
+    progress: Optional[Progress] = None,
+    lo: float = 0,
+    hi: float = 0,
+) -> Tuple[Dict[str, List[List[float]]], Dict[str, Dict[str, float]]]:
+    """
+    Periodicity-based riff transcription (stemforge_server.riff) for the guitar, lead and bass stems:
+    one note per pick attack, pitch from the waveform's periodicity (robust to distortion), pitch
+    changes followed inside held notes, Basic Pitch notes only where the audio is not periodic,
+    and notes that are really leakage from another stem dropped.
+    """
+    from . import riff
+
+    audio: Dict[str, List[np.ndarray]] = {}
+    needed = set(stems)
+    for s in stems:
+        needed.update(BLEED_SOURCES.get(s, ()))
+    for name in needed:
+        f = stems_dir / f"{name}.flac"
+        if f.exists():
+            audio[name] = load_stem_22k(f)
+    out: Dict[str, List[List[float]]] = {}
+    stats: Dict[str, Dict[str, float]] = {}
+    for k, s in enumerate(stems):
+        if s not in audio:
+            continue
+        refs = [np.mean(audio[r], axis=0) for r in BLEED_SOURCES.get(s, ()) if r in audio and r != s]
+        sens = opts.sensitivity.get("bass" if s == "bass" else "guitar", 0.5)
+        notes, st = riff.transcribe_stem(s, audio[s], sensitivity=sens, fallback_notes=fallback.get(s), bleed_refs=refs)
+        out[s] = notes
+        stats[s] = {key: round(v, 2) for key, v in st.items()}
+        if progress is not None and hi > lo:
+            progress.set_percent(lo + (hi - lo) * (k + 1) / len(stems))
+    return out, stats
 
 
 # --------------------------------------------------------------------------- drum transcription
@@ -699,7 +899,21 @@ def run_job(
                     raw = fut.result()
                     notes[s] = gate_notes(raw, envs[s], 0.05, opts.silence_gate_db)
                     done += 1
-                    progress.set_percent(74 + 14 * done / len(to_run))
+                    progress.set_percent(74 + 8 * done / len(to_run))
+
+        # ---- guitar / lead / bass: riff transcriber (Basic Pitch only as the fallback for chords)
+        string_stats: Dict[str, Dict[str, float]] = {}
+        strings = [s for s in to_run if s in STRING_STEMS]
+        if strings:
+            progress.set("Transcribing guitar and bass riffs", 82)
+            try:
+                riffs, string_stats = transcribe_strings(stems_dir, strings, opts, notes, progress, 82, 88)
+                for s, ns in riffs.items():
+                    notes[s] = gate_notes(ns, envs[s], 0.05, opts.silence_gate_db)
+            except JobCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Riff transcription failed, keeping Basic Pitch notes: %s", exc)
 
         # ---- drums
         drums: List[List[float]] = []
@@ -721,12 +935,25 @@ def run_job(
                     drum_engine = "onsets"
                 drums = [h for h in drums if envs["drums"][min(len(envs["drums"]) - 1, int(h[0] / 0.05))] >= opts.silence_gate_db - 10]
 
-        # ---- tempo & beat grid (from the full mix)
-        progress.set("Detecting tempo and beat grid", 95)
+        # ---- tempo & beat grid (from the full mix): Beat This! tempo map, librosa as the fallback
+        progress.set("Detecting beats, bars and tempo", 95)
         tempo = analyze_tempo(mix.mean(0), MODEL_SR, opts)
+        tempo["tempoEngine"] = "librosa"
+        from . import beats as beat_tracker
+
+        if beat_tracker.available():
+            try:
+                bt, db = beat_tracker.track(mix.mean(0), MODEL_SR)
+                tm = beat_tracker.tempo_map(bt, db, duration, opts.tempo_min, opts.tempo_max)
+                if tm:
+                    tempo = {**tempo, **tm, "tempoEngine": "beat_this"}
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Beat tracking failed, using the fixed tempo grid: %s", exc)
 
     result["transcription"] = {
         "engine": "basic-pitch" if basic_pitch_model() is not None else None,
+        "stringEngine": "riff" if string_stats else ("basic-pitch" if basic_pitch_model() is not None else None),
+        "stringStats": string_stats,
         "drumEngine": drum_engine,
         "notes": notes,
         "drums": drums,
@@ -735,7 +962,7 @@ def run_job(
         "seconds": round(time.perf_counter() - t1, 2),
         "options": opts.to_dict(),
     }
-    result["analysis"] = {**tempo, "timeSignature": [4, 4]}
+    result["analysis"] = {"timeSignature": [4, 4], **tempo}
     result["durationSec"] = round(duration, 3)
     result["sampleRate"] = stem_sr
     if opts.free_vram_after:

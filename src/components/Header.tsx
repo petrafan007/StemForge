@@ -100,8 +100,9 @@ export function Header({
           <button
             type="button"
             onClick={() => onSelectView('mixer')}
-            className="h-12 md:h-14 inline-flex items-center font-display text-lg font-bold tracking-tight text-white hover:text-amber-400 transition-colors whitespace-nowrap cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-500 rounded-sm"
+            className="h-12 md:h-14 inline-flex items-center gap-2 font-display text-lg font-bold tracking-tight text-white hover:text-amber-400 transition-colors whitespace-nowrap cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-500 rounded-sm"
           >
+            <img src="/favicon.svg" alt="" width={26} height={26} className="rounded-md" />
             StemForge
           </button>
 

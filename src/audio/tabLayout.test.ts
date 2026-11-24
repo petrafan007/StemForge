@@ -78,3 +78,15 @@ test('MusicXML carries chord symbols as harmony elements', () => {
   assert.ok(xml.includes('<kind text="5">power</kind>'));
   assert.ok(xml.includes('<kind text="m7">minor-seventh</kind>'));
 });
+
+test('tab notes keep their real start so the highlight follows the audio, not the grid slot', () => {
+  const n = (id: string, startBeat: number, fret: number): TabNoteEvent => ({ id, midi: 40 + fret, startBeat, durationBeats: 0.5, stringIndex: 5, fret, velocity: 100 });
+  const { notes } = quantizeTabNotes([n('a', 0.11, 0), n('b', 0.62, 2)], 0.25);
+  assert.equal(notes[0].col, 0); // drawn in the first 16th slot...
+  assert.equal(notes[0].beat, 0.11); // ...but played 0.11 beats later
+  assert.equal(notes[0].endBeat, 0.61);
+  assert.ok(Math.abs(notes[0].endBeat - 0.61) < 1e-9);
+  // a held note ends where the next note on the same string really starts
+  const held = quantizeTabNotes([{ ...n('c', 0, 0), durationBeats: 2 }, n('d', 0.62, 2)], 0.25).notes;
+  assert.equal(held[0].endBeat, 0.62);
+});

@@ -2,23 +2,50 @@
 
 The Python backend for StemForge. It runs on http://127.0.0.1:8000 (this computer only) and handles:
 
-1. **Separation:** Meta's **Demucs** on your NVIDIA GPU.
-   - **Fast:** `htdemucs_6s`, 1 pass.
-   - **Balanced:** `htdemucs_6s`, 2 passes.
-   - **High:** `htdemucs_ft` for vocals, bass, and drums, plus `htdemucs_6s` for guitar and piano.
+1. **Separation** on your NVIDIA GPU:
+   - **Fast:** Meta's Demucs `htdemucs_6s`, 1 pass.
+   - **Balanced:** **BS-RoFormer-SW** (6 stems: vocals, guitar, bass, drums, piano, other), 2× overlap.
+   - **High:** BS-RoFormer-SW with 4× overlap. Falls back to Demucs (`htdemucs_ft` + `htdemucs_6s`) if the RoFormer weights aren't installed.
    - **Optional lead/rhythm guitar split:** separates the center-panned guitar from the side-panned guitars.
 2. **Transcription:**
-   - **Melodic stems:** Spotify **Basic Pitch** (ONNX, CPU) transcribes polyphonic notes for guitar(s), bass, keyboards, and vocals.
+   - **Guitar / lead / bass:** the riff transcriber (`stemforge_server/riff.py`):
+     - one note per pick attack, from a SuperFlux-style onset detector weighted toward pick noise;
+     - pitch from the YIN periodicity of the waveform, which is robust to distortion: single note vs. power chord (± octave) vs. not periodic;
+     - pitch changes followed inside held notes (legato, slides);
+     - left and right guitars transcribed separately, then merged;
+     - bleed from the bass, vocal and drum stems rejected;
+     - the tuning's lowest string estimated in a first pass.
+     Basic Pitch is used only where the audio isn't periodic (full chords).
+   - **Keyboards and vocals:** Spotify **Basic Pitch** (ONNX, CPU) transcribes polyphonic notes.
    - **Silence gating:** keeps bleed from turning into phantom notes.
    - **Drums:** **ADTOF** if it's installed (`setup_windows.ps1 -WithAdtof`), otherwise a band-limited onset detector.
-   - **Tempo:** librosa estimates the tempo and beat-grid offset within a genre-dependent tempo range.
+   - **Tempo map:** **Beat This!** (CPJKU, ISMIR 2024) finds every beat and downbeat. The beats are kept at one metrical level for the whole song (half-time and double-time stretches are folded), and bar lines come from the downbeats. librosa is the fallback.
 3. **Project library:**
    - **Drafts** are saved in `Documents\StemForge\Projects` by default. The folder can be changed in Settings.
    - **`.sfg`** project files can be packed and unpacked.
 4. **Export:** mixes any stems with volume and pan, applies optional Rubber Band pitch shift and time stretch, trims, fades, and normalizes, then encodes with FFmpeg.
 5. **Desktop mode:** serves the built web app (`../dist`) for `StemForge.exe`.
 
-Everything installs into `local-gpu-server/.venv`. Demucs weights are cached in `local-gpu-server/models` (`TORCH_HOME`), so other PyTorch tools such as ComfyUI are never touched.
+Everything installs into `local-gpu-server/.venv`. Model weights (Demucs, BS-RoFormer-SW, Beat This!) live in `local-gpu-server/models`, so other PyTorch tools such as ComfyUI are never touched. `setup_windows.ps1` downloads the RoFormer and Beat This! weights and checks their SHA-256 hashes. Both are loaded tensors-only (`torch.load(weights_only=True)`).
+
+### Benchmarks
+
+`benchmarks/` renders synthetic metal songs with an exact answer key: Karplus-Strong guitars through an amp simulation, drop and standard tunings, chugs, gallops, tremolo, runs and power chords. It then scores the transcribers with mir_eval:
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\synth_metal.py benchmarks\data
+.\.venv\Scripts\python.exe benchmarks\evaluate.py benchmarks\data --sep oraclebleed --methods current,riff --parts rhythm,bass,lead
+```
+
+Results (F-measure: 50 ms onset tolerance, 50 cents pitch tolerance):
+
+| Part | Basic Pitch (previous engine) | Riff transcriber |
+| --- | --- | --- |
+| Rhythm guitar | F 0.67–0.72 (150–160 phantom notes/min) | F 0.92–0.96 (25–28 phantom notes/min) |
+| Bass | F 0.30–0.44 (~200 phantom notes/min) | F 1.00 (0–2 phantom notes/min) |
+| Lead guitar | F 0.05–0.06 (bleed became notes) | F 0.89–0.91 |
+
+Both columns use the same stems: the true parts with simulated bleed from the other instruments (`--sep oraclebleed`).
 
 ## Setup
 

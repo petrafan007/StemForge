@@ -167,8 +167,10 @@ function Playhead({ layout, currentBeat, palette, follow, containerRef }: { layo
   if (!loc || currentBeat < 0) return null;
   const { row, measure } = loc;
   const x = layout.labelWidth + beatX(layout, measure, currentBeat);
-  const col = currentBeat / layout.grid;
-  const active = measure.notes.filter((n) => col >= n.col - 0.05 && col < n.col + Math.max(1, n.durSteps));
+  // Light a note from the moment it is really played (not its grid slot, which can be up to half a
+  // step early) until it ends; very short notes stay lit long enough to be seen.
+  const minLit = layout.grid * 0.75;
+  const active = measure.notes.filter((n) => currentBeat >= n.beat && currentBeat < Math.max(n.endBeat, n.beat + minLit));
   const yOf = (s: number) => row.top + layout.staffTop + s * layout.stringGap;
   return (
     <>

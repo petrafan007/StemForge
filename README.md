@@ -5,17 +5,19 @@ Free, local-first stem separator, MIDI studio, and guitar/bass tab and sheet mus
 ## What it does
 
 - **Separates songs into tracks:** Vocals, Guitar, Bass, Drums, and Keyboards, plus an optional **Lead / Rhythm guitar split** (center-panned leads vs. hard-panned double-tracked rhythm guitars, common in rock and metal). Works with MP3, WAV, FLAC, OGG, M4A, AAC, AIFF, and the audio of MP4, MOV, MKV, and WEBM videos.
-- **Three quality modes**, all using Meta's Demucs on the GPU:
-  - **Fast:** single pass.
-  - **Balanced:** 2 passes.
-  - **High:** adds the fine-tuned `htdemucs_ft` model for cleaner drums, bass, and vocals (about 50 s per 4-minute song on an RTX 4070).
+- **Three quality modes** on the GPU:
+  - **Fast:** Meta's Demucs (`htdemucs_6s`), single pass.
+  - **Balanced:** **BS-RoFormer-SW**, a 6-stem band-split RoFormer with much cleaner guitar and bass stems (about 30 s per 4-minute song on an RTX 4070).
+  - **High:** the same model with 4× overlap (about 55 s). Demucs is the automatic fallback if the RoFormer weights are missing.
 - **Transcribes every part to MIDI:**
-  - **Melodic parts:** Spotify **Basic Pitch** transcribes polyphonic notes (chords included) for guitar(s), bass, keys, and vocal melody.
+  - **Guitar, lead guitar and bass:** a **riff transcriber** built for distorted metal tones. It finds every pick attack, then reads the pitch from the waveform's periodicity rather than its spectrum, so distortion overtones don't become notes. It knows power chords (root + fifth, with or without the octave), follows hammer-ons, pull-offs and slides, and transcribes hard-panned double-tracked guitars separately before merging them. It also drops notes that are really bass, vocal or drum bleed, and uses the tuning's lowest string to keep chord roots in the right octave.
+  - **Keys and vocals:** Spotify **Basic Pitch** transcribes polyphonic notes. It is also the fallback for full chords the riff transcriber can't read.
   - **Drums:** the optional **ADTOF** neural model, trained on rock and metal charts, or a built-in onset detector.
   - **Clean-up:** distorted power chords are simplified, and silent tracks are skipped, so you don't get phantom notes from bleed.
-- **Tempo, beat grid, key and time signature** are detected automatically (up to 260 BPM with the Metal preset). Anything can be corrected per song, including ½×/2× tempo, beat-grid nudge, 6/8 or 7/8, and key.
+- **Tempo map, bars, key and time signature** are detected automatically. **Beat This!** tracks every beat and downbeat, so bars and the playhead follow the band's real tempo instead of drifting off a fixed BPM. Anything can be corrected per song, including ½×/2× tempo, a beat-grid nudge, 6/8 or 7/8, and key.
+- **In-sync playback:** the playhead and the highlighted tab notes follow what you hear. The audio device's output latency is measured and compensated, notes light up at their real attack, and **Settings → Playback Sync** adds a manual delay for Bluetooth headphones.
 - **Tabs and sheet music:**
-  - Chord-aware tab fingering.
+  - Whole-part tab fingering: power-chord shapes, few position shifts in fast passages, and the same riff fingered the same way every time it repeats.
   - **Auto-detected tunings:** Standard, Drop D, Eb, D, Drop C#, Drop C, C# and C standard, Drop B, B standard, Drop A, 7- and 8-string, and 4- or 5-string bass.
   - Chord charts (including power chords) and on-screen sheet music.
 - **Mixer:** mute, solo, volume, pan, and presets. **Key change** uses true pitch shifting (Rubber Band), so the tempo stays the same. Speed control and a metronome on the beat grid are included.
@@ -75,10 +77,13 @@ Open **Settings → Genre & Transcription → Metal**, and turn on **Split lead 
 ├── local-gpu-server/
 │   ├── gpu_server.py             # FastAPI app: projects, jobs, stems, export, settings, .sfg, web app
 │   ├── stemforge_server/
-│   │   ├── pipeline.py           # Demucs separation, guitar split, Basic Pitch, drums, tempo
+│   │   ├── pipeline.py           # RoFormer / Demucs separation, guitar split, transcription, drums, tempo
+│   │   ├── riff.py               # guitar / bass riff transcriber (pick attacks + periodicity)
+│   │   ├── beats.py              # Beat This! beats & downbeats -> tempo map
 │   │   ├── projects.py           # Project library + .sfg pack/unpack
 │   │   ├── export.py             # Mixdown + FFmpeg encoding (Audacity-style options)
 │   │   └── settings.py           # %LOCALAPPDATA%\StemForge\settings.json
+│   ├── benchmarks/               # synthetic metal songs with answer keys + scoring (mir_eval)
 │   ├── requirements.txt / setup_windows.ps1 / start_windows.ps1
 ├── src/
 │   ├── audio/                    # audio engine, project model, music analysis, MIDI/MusicXML, server API

@@ -22,3 +22,10 @@ resampy>=0.2.2,<0.4.3
 scikit-learn>=1.3
 scipy>=1.11
 typing-extensions>=4.8
+
+# BS-RoFormer-SW separation (Balanced / High quality): 6 stems with a much cleaner guitar and
+# bass than Demucs, which the tab transcriber depends on. Weights are downloaded by setup.
+bs-roformer-infer==0.1.5
+
+# Beat / downbeat tracking -> tempo map (Beat This!, CPJKU, ISMIR 2024). Checkpoint downloaded by setup.
+beat-this==1.1.0

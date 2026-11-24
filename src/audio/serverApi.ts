@@ -100,9 +100,19 @@ export interface ProjectDocument {
     } | null;
   };
   stems: StemId[];
-  analysis?: { bpm: number; beatOffsetSec: number; bpmCandidates?: number[]; timeSignature?: [number, number] };
+  analysis?: {
+    bpm: number;
+    beatOffsetSec: number;
+    bpmCandidates?: number[];
+    timeSignature?: [number, number];
+    /** Tempo map: time (s) of every beat, first beat on a bar line (Beat This! tracker). */
+    beats?: number[];
+    tempoEngine?: 'beat_this' | 'librosa';
+  };
   transcription?: {
     engine: 'basic-pitch' | null;
+    stringEngine?: 'riff' | 'basic-pitch' | null;
+    stringStats?: Record<string, Record<string, number>>;
     drumEngine: 'adtof' | 'onsets' | null;
     notes: Partial<Record<MelodicStemId, NoteTuple[]>>;
     drums: DrumTuple[];

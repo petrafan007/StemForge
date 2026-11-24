@@ -72,3 +72,6 @@ CLAUDE.local.md
 # Desktop app build output (rebuilt by desktop/build-desktop-app.ps1)
 /StemForge.exe
 *.lnk
+
+# Benchmark audio rendered by local-gpu-server/benchmarks/synth_metal.py
+local-gpu-server/benchmarks/data/

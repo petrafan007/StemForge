@@ -90,3 +90,18 @@ test('encodeWavPcm produces valid 16-bit stereo RIFF/WAVE bytes', () => {
   assert.equal(String.fromCharCode(...wav.slice(8, 12)), 'WAVE');
   assert.equal(wav.length, 44 + 4 * 2 * 2);
 });
+
+test('encodeMidiFile writes one tempo event per tempo-map change', () => {
+  const bytes = encodeMidiFile({
+    bpm: 120,
+    tempoChanges: [
+      { beat: 0, bpm: 120 },
+      { beat: 4, bpm: 90 },
+      { beat: 8, bpm: 180 },
+    ],
+    tracks: [{ name: 'T', notes: [{ id: 'a', midi: 60, startBeat: 0, durationBeats: 1, velocity: 100, channel: 0 }] }],
+  });
+  let tempos = 0;
+  for (let i = 0; i + 2 < bytes.length; i++) if (bytes[i] === 0xff && bytes[i + 1] === 0x51 && bytes[i + 2] === 0x03) tempos++;
+  assert.equal(tempos, 3);
+});

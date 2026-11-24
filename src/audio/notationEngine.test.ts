@@ -101,3 +101,29 @@ test('getStaffPosition computes accurate Treble and Bass clef line offsets', () 
   const g2 = getStaffPosition(43, 'bass');
   assert.equal(g2.lineOffsetFromBottom, 0);
 });
+
+test('mapNotesToTab fingers power chords as shapes and repeats a riff the same way', () => {
+  const ev = (id: string, midi: number, startBeat: number) => ({ id, midi, startBeat, durationBeats: 0.25, velocity: 100, channel: 0 });
+  const riff: ReturnType<typeof ev>[] = [];
+  let k = 0;
+  for (let bar = 0; bar < 4; bar++) {
+    const b = bar * 4;
+    // E5 chug, G5, A5 power chords, then a fast single-note run that could sit in two positions
+    for (const [t, ms] of [[0, [40, 47]], [0.5, [43, 50]], [1, [45, 52]], [2, [57]], [2.25, [55]], [2.5, [53]], [2.75, [52]]] as Array<[number, number[]]>) {
+      for (const m of ms) riff.push(ev(`n${k++}`, m, b + t));
+    }
+  }
+  const tab = mapNotesToTab(riff, GUITAR_TUNINGS.standard, 0, 22);
+  const at = (beat: number) => tab.filter((t) => Math.abs(t.startBeat - beat) < 1e-6).map((t) => `${t.stringIndex}:${t.fret}`).sort().join(' ');
+  // E5 = open low E + 2nd fret A string; G5 = 3rd fret E + 5th fret A
+  assert.equal(at(0), '4:2 5:0');
+  assert.equal(at(0.5), '4:5 5:3');
+  // every repeat of the riff is fingered identically
+  for (const t of [0, 0.5, 1, 2, 2.25, 2.5, 2.75]) {
+    assert.equal(at(4 + t), at(t));
+    assert.equal(at(12 + t), at(t));
+  }
+  // the fast run stays in one position (no frets far apart)
+  const run = [2, 2.25, 2.5, 2.75].map((t) => tab.find((x) => Math.abs(x.startBeat - t) < 1e-6)!.fret);
+  assert.ok(Math.max(...run) - Math.min(...run) <= 4, run.join(','));
+});

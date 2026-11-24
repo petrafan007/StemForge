@@ -178,6 +178,8 @@ export interface SongProject {
   bpm: number;
   /** Time (seconds) of the first beat of the grid; beat = (time - beatOffsetSec) * bpm / 60. */
   beatOffsetSec: number;
+  /** Tempo map: real time (s) of every beat from the beat tracker. When set it replaces bpm/offset math. */
+  beatTimes?: number[];
   timeSignature: [number, number]; // e.g. [4, 4]
   keyRootPc: number; // 0-11
   keyMode: 'major' | 'minor';
@@ -191,6 +193,8 @@ export interface SongProject {
   chords: ChordEvent[];
   /** Which transcriber produced the melodic notes: 'basic-pitch' = polyphonic neural (GPU server), 'yin' = browser monophonic. */
   transcriptionEngine?: 'basic-pitch' | 'yin' | 'demo';
+  /** Guitar / bass transcriber: 'riff' = periodicity-based pick-attack transcriber (GPU server). */
+  stringEngine?: 'riff' | 'basic-pitch';
   drumEngine?: 'adtof' | 'onsets' | 'browser' | 'demo';
   /** Server project id when the song lives in the project library (autosaved, exportable). */
   serverProjectId?: string;

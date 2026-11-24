@@ -170,9 +170,10 @@ export function getTuningPreset(
 /**
  * Maps MIDI note events onto playable guitar or bass string/fret positions.
  *
- * Notes that start together (chords from the polyphonic transcriber) are placed as a
- * group on distinct strings, choosing the fingering with the smallest hand stretch that
- * stays near the current hand position. Single notes minimize position jumps.
+ * Notes that start together are one chord shape on distinct strings. The fingering of the whole
+ * part is optimised at once (Viterbi over every chord / note's candidate shapes, as in the
+ * "optimum path" approach to tablature): small stretches, few and short position shifts (shifts
+ * cost more in fast passages), and the same notes fingered the same way every time they repeat.
  */
 export function mapNotesToTab(
   notes: MidiNoteEvent[],
@@ -196,97 +197,200 @@ export function mapNotesToTab(
     .sort((a, b) => a.note.startBeat - b.note.startBeat || b.midi - a.midi);
 
   // Group simultaneous onsets into chords
-  const groups: Array<typeof prepared> = [];
+  const rawGroups: Array<typeof prepared> = [];
   for (const item of prepared) {
-    const last = groups[groups.length - 1];
+    const last = rawGroups[rawGroups.length - 1];
     if (last && item.note.startBeat - last[0].note.startBeat <= CHORD_WINDOW_BEATS) {
       // Same pitch twice in one chord is a transcription duplicate: keep the louder one
       const dup = last.findIndex((x) => x.midi === item.midi);
       if (dup === -1) last.push(item);
       else if (item.note.velocity > last[dup].note.velocity) last[dup] = item;
     } else {
-      groups.push([item]);
+      rawGroups.push([item]);
     }
   }
 
-  let anchorFret = 5;
-  const result: TabNoteEvent[] = [];
+  // Candidate fingerings per distinct pitch set (cached: riffs repeat the same shapes)
+  const cache = new Map<string, Fingering[]>();
+  const candidatesFor = (midis: number[]): Fingering[] => {
+    const key = midis.join(',');
+    const hit = cache.get(key);
+    if (hit) return hit;
+    const found = enumerateFingerings(midis, tuning, maxFret);
+    cache.set(key, found);
+    return found;
+  };
 
-  const noteCost = (fret: number) =>
-    (fret === 0 ? 1.5 : Math.abs(fret - anchorFret)) + (fret > 12 ? (fret - 12) * 0.6 : 0);
-
-  for (const rawGroup of groups) {
-    // Keep at most one note per string, preferring the loudest notes
+  // Keep at most one note per string (loudest first); drop the quietest note of an unplayable chord
+  const groups: Array<{ items: typeof prepared; key: string; cands: Fingering[] }> = [];
+  for (const rawGroup of rawGroups) {
     let group = [...rawGroup];
-    if (group.length > numStrings) {
-      group = group
-        .sort((a, b) => b.note.velocity - a.note.velocity)
-        .slice(0, numStrings);
-    }
+    if (group.length > numStrings) group = group.sort((a, b) => b.note.velocity - a.note.velocity).slice(0, numStrings);
     group.sort((a, b) => b.midi - a.midi);
+    let cands = candidatesFor(group.map((g) => g.midi));
+    while (!cands.length && group.length > 1) {
+      let quietest = 0;
+      for (let k = 1; k < group.length; k++) if (group[k].note.velocity < group[quietest].note.velocity) quietest = k;
+      group.splice(quietest, 1);
+      cands = candidatesFor(group.map((g) => g.midi));
+    }
+    if (!cands.length) continue;
+    groups.push({ items: group, key: group.map((g) => g.midi).join(','), cands });
+  }
+  if (!groups.length) return [];
 
-    let best: { strings: number[]; frets: number[]; cost: number } | null = null;
-    while (group.length > 0 && !best) {
-      const used = new Array<boolean>(numStrings).fill(false);
-      const strings: number[] = [];
-      const frets: number[] = [];
+  /**
+   * Viterbi over the whole part: each chord / note picks one candidate fingering so that the total
+   * of shape costs + hand movement is smallest. Fast passages make position jumps expensive, so
+   * riffs stay in one position the way a guitarist plays them. A second pass gives every repeat of
+   * the same notes the fingering most of its repeats got, so a riff is tabbed the same way each time.
+   */
+  const solve = (preferred: Map<string, string> | null): number[] => {
+    const n = groups.length;
+    const back: Int16Array[] = new Array(n);
+    let prev = groups[0].cands.map((c) => c.cost - bonus(groups[0], c, preferred));
+    back[0] = new Int16Array(prev.length).fill(-1);
+    for (let i = 1; i < n; i++) {
+      const g = groups[i];
+      const gap = g.items[0].note.startBeat - groups[i - 1].items[0].note.startBeat;
+      const cur = new Array<number>(g.cands.length).fill(Number.POSITIVE_INFINITY);
+      const bk = new Int16Array(g.cands.length);
+      g.cands.forEach((c, j) => {
+        const own = c.cost - bonus(g, c, preferred);
+        groups[i - 1].cands.forEach((p, k) => {
+          const v = prev[k] + moveCost(p, c, gap) + own;
+          if (v < cur[j]) {
+            cur[j] = v;
+            bk[j] = k;
+          }
+        });
+      });
+      prev = cur;
+      back[i] = bk;
+    }
+    const choice = new Array<number>(n);
+    let best = 0;
+    for (let j = 1; j < prev.length; j++) if (prev[j] < prev[best]) best = j;
+    for (let i = n - 1; i >= 0; i--) {
+      choice[i] = best;
+      best = back[i][best];
+    }
+    return choice;
+  };
 
-      const search = (i: number, cost: number) => {
-        if (best && cost >= best.cost) return;
-        if (i === group.length) {
-          const fretted = frets.filter((f) => f > 0);
-          const span = fretted.length ? Math.max(...fretted) - Math.min(...fretted) : 0;
-          if (span > 5) return; // unplayable stretch
-          const total = cost + (span > 3 ? (span - 3) * 2.5 : 0);
-          if (!best || total < best.cost) best = { strings: [...strings], frets: [...frets], cost: total };
-          return;
-        }
-        for (let s = 0; s < numStrings; s++) {
-          if (used[s]) continue;
-          const fret = group[i].midi - tuning.openMidi[s];
-          if (fret < 0 || fret > maxFret) continue;
-          used[s] = true;
-          strings.push(s);
-          frets.push(fret);
-          search(i + 1, cost + noteCost(fret));
-          strings.pop();
-          frets.pop();
-          used[s] = false;
-        }
-      };
-      search(0, 0);
-
-      if (!best) {
-        // No playable fingering for the whole chord: drop the quietest note and retry
-        let quietest = 0;
-        for (let k = 1; k < group.length; k++) {
-          if (group[k].note.velocity < group[quietest].note.velocity) quietest = k;
-        }
-        group.splice(quietest, 1);
+  let choice = solve(null);
+  const votes = new Map<string, Map<string, number>>();
+  groups.forEach((g, i) => {
+    const sig = g.cands[choice[i]].sig;
+    const m = votes.get(g.key) ?? new Map<string, number>();
+    m.set(sig, (m.get(sig) ?? 0) + 1);
+    votes.set(g.key, m);
+  });
+  const preferred = new Map<string, string>();
+  for (const [key, m] of votes) {
+    let top = '';
+    let count = 0;
+    let total = 0;
+    for (const [sig, c] of m) {
+      total += c;
+      if (c > count) {
+        top = sig;
+        count = c;
       }
     }
+    if (total >= 2) preferred.set(key, top);
+  }
+  if (preferred.size) choice = solve(preferred);
 
-    if (!best) continue;
-    const chosen = best as { strings: number[]; frets: number[]; cost: number };
-    const frettedFrets = chosen.frets.filter((f) => f > 0);
-    if (frettedFrets.length) {
-      const mean = frettedFrets.reduce((sum, f) => sum + f, 0) / frettedFrets.length;
-      anchorFret = Math.round(anchorFret * 0.6 + mean * 0.4);
-    }
-    group.forEach((item, k) => {
+  const result: TabNoteEvent[] = [];
+  groups.forEach((g, i) => {
+    const f = g.cands[choice[i]];
+    g.items.forEach((item, k) => {
       result.push({
         id: item.note.id,
         midi: item.midi,
         startBeat: item.note.startBeat,
         durationBeats: item.note.durationBeats,
-        stringIndex: chosen.strings[k],
-        fret: chosen.frets[k],
+        stringIndex: f.strings[k],
+        fret: f.frets[k],
         velocity: item.note.velocity,
       });
     });
-  }
-
+  });
   return result.sort((a, b) => a.startBeat - b.startBeat || a.stringIndex - b.stringIndex);
+}
+
+interface Fingering {
+  strings: number[]; // per note (notes sorted high -> low pitch)
+  frets: number[];
+  cost: number; // shape cost
+  pos: number | null; // hand position (lowest fretted fret), null = open strings only
+  sig: string;
+}
+
+const MAX_CANDIDATES = 14;
+
+/** All playable ways to finger a set of pitches (sorted high -> low), cheapest shapes first. */
+function enumerateFingerings(midis: number[], tuning: TuningPreset, maxFret: number): Fingering[] {
+  const numStrings = tuning.openMidi.length;
+  const out: Fingering[] = [];
+  const used = new Array<boolean>(numStrings).fill(false);
+  const strings: number[] = [];
+  const frets: number[] = [];
+  const rec = (i: number) => {
+    if (out.length > 600) return;
+    if (i === midis.length) {
+      const fretted = frets.filter((f) => f > 0);
+      const lo = fretted.length ? Math.min(...fretted) : 0;
+      const hi = fretted.length ? Math.max(...fretted) : 0;
+      const span = hi - lo;
+      if (span > 5) return; // unplayable stretch
+      let cost = span > 3 ? (span - 3) * 2.5 : 0;
+      for (const f of frets) cost += f === 0 ? 0.3 : 0.08 * f + (f > 12 ? (f - 12) * 0.3 : 0);
+      // higher notes belong on higher strings (lower index); crossed voicings are awkward
+      for (let k = 1; k < strings.length; k++) if (strings[k] < strings[k - 1]) cost += 2;
+      if (midis.length > 1) {
+        // chord shapes sit on neighbouring strings (power chords: root + fifth one string up) ...
+        for (let k = 1; k < strings.length; k++) cost += 0.6 * Math.max(0, Math.abs(strings[k] - strings[k - 1]) - 1);
+        // ... and an open string inside a fretted shape is only natural as its lowest note (E5 with open E)
+        const lowest = frets.length - 1; // notes are sorted high -> low
+        if (fretted.length) frets.forEach((f, k) => (cost += f === 0 && k !== lowest ? 0.5 : 0));
+      }
+      out.push({ strings: [...strings], frets: [...frets], cost, pos: fretted.length ? lo : null, sig: strings.map((s, k) => `${s}:${frets[k]}`).join('|') });
+      return;
+    }
+    for (let s = 0; s < numStrings; s++) {
+      if (used[s]) continue;
+      const fret = midis[i] - tuning.openMidi[s];
+      if (fret < 0 || fret > maxFret) continue;
+      used[s] = true;
+      strings.push(s);
+      frets.push(fret);
+      rec(i + 1);
+      strings.pop();
+      frets.pop();
+      used[s] = false;
+    }
+  };
+  rec(0);
+  out.sort((a, b) => a.cost - b.cost);
+  return out.slice(0, MAX_CANDIDATES);
+}
+
+/** Hand movement between two consecutive shapes; quick successions make jumps expensive. */
+function moveCost(a: Fingering, b: Fingering, gapBeats: number): number {
+  let cost = 0;
+  if (a.pos !== null && b.pos !== null) {
+    const d = Math.abs(a.pos - b.pos);
+    const w = gapBeats < 0.6 ? 0.9 : gapBeats < 1.5 ? 0.6 : 0.3;
+    cost += d * w + (d > 4 ? (d - 4) * 0.6 : 0);
+  }
+  if (a.strings.length === 1 && b.strings.length === 1) cost += 0.12 * Math.abs(a.strings[0] - b.strings[0]);
+  return cost;
+}
+
+function bonus(g: { key: string }, c: Fingering, preferred: Map<string, string> | null): number {
+  return preferred && preferred.get(g.key) === c.sig ? 1.5 : 0;
 }
 
 /**

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <title>StemForge</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#262B35"/>
+      <stop offset="1" stop-color="#0B0D10"/>
+    </linearGradient>
+    <linearGradient id="heat" x1="0.2" y1="0" x2="0.75" y2="1">
+      <stop offset="0" stop-color="#FDE68A"/>
+      <stop offset="0.45" stop-color="#F59E0B"/>
+      <stop offset="1" stop-color="#DC2626"/>
+    </linearGradient>
+    <clipPath id="tileClip"><rect width="256" height="256" rx="58"/></clipPath>
+    <radialGradient id="glow" cx="0.5" cy="0.62" r="0.5">
+      <stop offset="0" stop-color="#F59E0B" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#F59E0B" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- app tile -->
+  <rect width="256" height="256" rx="58" fill="url(#tile)"/>
+  <rect x="3" y="3" width="250" height="250" rx="55" fill="none" stroke="#FFFFFF" stroke-opacity="0.07" stroke-width="2"/>
+  <circle cx="128" cy="150" r="118" fill="url(#glow)" clip-path="url(#tileClip)"/>
+  <!-- glowing guitar pick (the forge) -->
+  <path d="M128 226 C 101 199 46 139 46 93 C 46 55 84 32 128 32 C 172 32 210 55 210 93 C 210 139 155 199 128 226 Z" fill="url(#heat)"/>
+  <!-- separated stems: five bars cut out of the pick -->
+  <g fill="#14171D">
+    <rect x="77" y="98" width="14" height="44" rx="7"/>
+    <rect x="98" y="74" width="14" height="92" rx="7"/>
+    <rect x="121" y="60" width="14" height="128" rx="7"/>
+    <rect x="144" y="80" width="14" height="80" rx="7"/>
+    <rect x="165" y="102" width="14" height="36" rx="7"/>
+  </g>
+</svg>

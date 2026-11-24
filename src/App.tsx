@@ -466,8 +466,9 @@ export default function App() {
     let lastUpdate = 0;
     const tick = (now: number) => {
       const engine = engineRef.current;
-      if (engine && now - lastUpdate >= 45) {
-        const t = engine.getCurrentTime();
+      if (engine && now - lastUpdate >= 30) {
+        // what is being heard now (output latency compensated) minus the user's extra delay
+        const t = Math.max(0, engine.getAudibleTime() - settingsRef.current.playback.avSyncMs / 1000);
         setCurrentTime(t);
         lastUpdate = now;
         if (!loopEnabled && project && t >= project.duration - 0.03) {

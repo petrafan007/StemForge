@@ -1,7 +1,7 @@
 import type { DrumHitEvent, MidiNoteEvent, SongProject, StemId, StemMixerState } from '../types/music';
 import { ALL_STEM_IDS } from '../types/music';
 import { midiToFrequency } from './notationEngine';
-import { quarterBeatsPerMeasure, timeToBeat } from './timeline';
+import { beatToTime, quarterBeatsPerMeasure, timeToBeat } from './timeline';
 
 /**
  * Pitch handling:
@@ -143,11 +143,51 @@ export class MultiStemAudioEngine {
     return this.pitchMode === 'varispeed' ? this.playbackRate * 2 ** (this.transposeSemitones / 12) : this.playbackRate;
   }
 
+  /** Song position the audio clock is rendering now (used to schedule sounds). */
   public getCurrentTime(): number {
     if (!this.project) return 0;
     if (!this.isPlaying || !this.ctx) return this.pausedOffsetSec;
+    return this.songTimeAt(this.ctx.currentTime);
+  }
 
-    const elapsed = (this.ctx.currentTime - this.startedAtCtxTime) * this.effectiveRate();
+  /**
+   * Song position that is being HEARD right now. The audio clock runs ahead of the speakers by the
+   * output latency (buffering + driver + device; Bluetooth can add 100-300 ms), so the playhead and
+   * the tab highlight use this instead of getCurrentTime().
+   */
+  public getAudibleTime(): number {
+    if (!this.project) return 0;
+    if (!this.isPlaying || !this.ctx) return this.pausedOffsetSec;
+    return this.songTimeAt(this.audibleContextTime());
+  }
+
+  /** Output latency in seconds (0 when unknown). */
+  public getOutputLatency(): number {
+    if (!this.ctx) return 0;
+    return Math.max(0, this.ctx.currentTime - this.audibleContextTime());
+  }
+
+  private audibleContextTime(): number {
+    const ctx = this.ctx;
+    if (!ctx) return 0;
+    const now = ctx.currentTime;
+    try {
+      const ts = typeof ctx.getOutputTimestamp === 'function' ? ctx.getOutputTimestamp() : null;
+      if (ts && typeof ts.contextTime === 'number' && typeof ts.performanceTime === 'number' && ts.performanceTime > 0) {
+        const est = ts.contextTime + (performance.now() - ts.performanceTime) / 1000;
+        const lag = now - est;
+        if (lag >= 0 && lag < 0.5) return est;
+      }
+    } catch {
+      // not supported: fall through
+    }
+    const lat = (ctx.outputLatency || 0) + (ctx.baseLatency || 0);
+    return now - (lat > 0 && lat < 0.5 ? lat : 0);
+  }
+
+  private songTimeAt(ctxTime: number): number {
+    if (!this.project) return 0;
+    const elapsed = Math.max(0, ctxTime - this.startedAtCtxTime) * this.effectiveRate();
     const raw = this.pausedOffsetSec + elapsed;
     if (this.loopEnabled && this.project.duration > 0) {
       return raw % this.project.duration;
@@ -169,7 +209,7 @@ export class MultiStemAudioEngine {
 
   public pause(): void {
     if (!this.isPlaying) return;
-    this.pausedOffsetSec = this.getCurrentTime();
+    this.pausedOffsetSec = this.getAudibleTime(); // resume where the listener stopped hearing
     this.teardownSources();
     this.isPlaying = false;
   }
@@ -293,18 +333,22 @@ export class MultiStemAudioEngine {
     this.schedulerTimer = window.setInterval(() => {
       if (!this.isPlaying || !this.project || !this.ctx) return;
       const curTime = this.getCurrentTime();
-      const grid = { bpm: this.project.bpm, beatOffsetSec: this.project.beatOffsetSec };
-      const secPerBeat = 60 / grid.bpm;
+      const grid = this.project; // bpm / offset or the tempo map
       const currentBeat = timeToBeat(grid, curTime);
+      const at = (beat: number) => (beatToTime(grid, beat) - curTime) / rate; // seconds from now
       const rate = this.effectiveRate();
       const lookaheadBeats = 0.25;
 
       if (this.metronomeEnabled) {
-        const nextWholeBeat = Math.floor(currentBeat + 0.05);
-        if (nextWholeBeat !== this.lastScheduledBeat && nextWholeBeat >= 0) {
-          this.lastScheduledBeat = nextWholeBeat;
-          const perBar = Math.max(1, Math.round(quarterBeatsPerMeasure(this.project.timeSignature)));
-          this.scheduleClick(this.ctx, this.ctx.currentTime + 0.01, nextWholeBeat % perBar === 0);
+        // schedule each click ahead of time at the beat's exact time (tempo map aware)
+        const nextBeat = Math.ceil(currentBeat - 1e-6);
+        if (nextBeat !== this.lastScheduledBeat && nextBeat >= 0) {
+          const dt = at(nextBeat);
+          if (dt <= 0.15) {
+            this.lastScheduledBeat = nextBeat;
+            const perBar = Math.max(1, Math.round(quarterBeatsPerMeasure(this.project.timeSignature)));
+            this.scheduleClick(this.ctx, this.ctx.currentTime + Math.max(0, dt), nextBeat % perBar === 0);
+          }
         }
       }
 
@@ -315,12 +359,12 @@ export class MultiStemAudioEngine {
         if (this.midiPreviewMode === 'keyboards' || this.midiPreviewMode === 'combined') {
           for (const n of this.midiKeyNotes) {
             if (n.startBeat >= winStart && n.startBeat < winEnd) {
-              const dt = ((n.startBeat - winStart) * secPerBeat) / rate;
+              const dt = Math.max(0, at(n.startBeat));
               this.scheduleKeySynthNote(
                 this.ctx,
                 n.midi + this.transposeSemitones,
                 this.ctx.currentTime + dt,
-                Math.min(0.8, (n.durationBeats * secPerBeat) / rate),
+                Math.min(0.8, Math.max(0.03, at(n.startBeat + n.durationBeats) - at(n.startBeat))),
                 n.velocity
               );
             }
@@ -330,7 +374,7 @@ export class MultiStemAudioEngine {
         if (this.midiPreviewMode === 'drums' || this.midiPreviewMode === 'combined') {
           for (const h of this.midiDrumHits) {
             if (h.startBeat >= winStart && h.startBeat < winEnd) {
-              const dt = ((h.startBeat - winStart) * secPerBeat) / rate;
+              const dt = Math.max(0, at(h.startBeat));
               this.scheduleDrumSynthHit(this.ctx, h.midi, this.ctx.currentTime + dt, h.velocity);
             }
           }

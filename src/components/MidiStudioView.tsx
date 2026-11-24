@@ -9,7 +9,7 @@ import {
   type MidiTrackInput,
 } from '../audio/midiEncoder';
 import { midiToNoteName } from '../audio/notationEngine';
-import { beatToTime, timeToBeat } from '../audio/timeline';
+import { beatToTime, tempoChangesFor, timeToBeat } from '../audio/timeline';
 import { stemLabel } from '../types/music';
 import { slugifyFilename, triggerBinaryDownload } from '../utils/download';
 
@@ -449,6 +449,7 @@ export function MidiStudioView({
   const handleDownloadMidi = (scope: MidiTrackTab) => {
     const bytes = encodeMidiFile({
       bpm: project.bpm,
+      tempoChanges: tempoChangesFor(project),
       timeSignature: project.timeSignature,
       tracks: buildTracks(scope),
     });

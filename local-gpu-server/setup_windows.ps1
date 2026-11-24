@@ -78,6 +78,36 @@ if ($WithAdtof) {
     if ($LASTEXITCODE -ne 0) { Write-Warning "ADTOF install failed; StemForge will use its built-in drum onset detector." }
 }
 
+# Model weights for BS-RoFormer-SW separation and Beat This! beat tracking (pinned SHA-256).
+function Get-Model([string]$Url, [string]$Dest, [string]$Sha256) {
+    if ((Test-Path $Dest) -and ((Get-FileHash $Dest -Algorithm SHA256).Hash -eq $Sha256)) {
+        Write-Host "  $(Split-Path $Dest -Leaf): already installed"
+        return
+    }
+    New-Item -ItemType Directory -Force (Split-Path $Dest) | Out-Null
+    Write-Host "  downloading $(Split-Path $Dest -Leaf) ..."
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile "$Dest.part" -UseBasicParsing
+    } catch {
+        Write-Warning "Download failed for $Url ($($_.Exception.Message))."
+        return
+    }
+    $hash = (Get-FileHash "$Dest.part" -Algorithm SHA256).Hash
+    if ($hash -ne $Sha256) {
+        Remove-Item "$Dest.part" -Force
+        Write-Warning "Checksum mismatch for $(Split-Path $Dest -Leaf) (got $hash); not installed."
+        return
+    }
+    Move-Item -Force "$Dest.part" $Dest
+}
+
+Write-Host "Installing model weights (BS-RoFormer-SW ~700 MB, Beat This! ~80 MB) ..."
+$models = Join-Path $PSScriptRoot "models"
+$rof = Join-Path $models "roformer\roformer-model-bs-roformer-sw-by-jarredou"
+Get-Model "https://huggingface.co/enerjazzer/BS-ROFO-SW-Fixed/resolve/main/BS-Rofo-SW-Fixed.yaml" (Join-Path $rof "BS-Rofo-SW-Fixed.yaml") "52df622c95ff3c1f4e1389f476ed737581a2c2dc12324d52c9763be9ccd2be2b"
+Get-Model "https://huggingface.co/enerjazzer/BS-ROFO-SW-Fixed/resolve/main/BS-Rofo-SW-Fixed.ckpt" (Join-Path $rof "BS-Rofo-SW-Fixed.ckpt") "24e7d35ee9c64415673d3fd33e06a67cac2c103c5df6267ba1576459c775916e"
+Get-Model "https://cloud.cp.jku.at/public.php/dav/files/7ik4RrBKTS273gp/final0.ckpt" (Join-Path $models "beat_this\final0.ckpt") "8c328b45f59d8dd3dff219253ff6a8d6482be57d0133a29140e2febbf8eb8331"
+
 Write-Host "Verifying NVIDIA CUDA GPU detection and transcription model ..."
 & $venvPython -c "import torch; ok = torch.cuda.is_available(); print('CUDA Available:', ok); print('GPU:', torch.cuda.get_device_name(0) if ok else 'CPU fallback')"
 & $venvPython -c "from basic_pitch import build_icassp_2022_model_path, FilenameSuffix; from basic_pitch.inference import Model; Model(build_icassp_2022_model_path(FilenameSuffix.onnx)); print('Basic Pitch: OK')"

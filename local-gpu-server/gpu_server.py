@@ -36,6 +36,7 @@ from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from stemforge_server import SERVER_VERSION, export as sf_export, pipeline, projects, settings
+from stemforge_server import beats as _beats
 from stemforge_server.pipeline import JobCancelled, ProcessOptions, Progress
 
 # Only the StemForge web app running on this computer may call the server.
@@ -212,7 +213,8 @@ def health():
     return {
         "ok": True,
         "version": SERVER_VERSION,
-        "model": "htdemucs_6s",
+        "model": "bs_roformer_sw" if pipeline.roformer_available() else "htdemucs_6s",
+        "separators": ["bs_roformer_sw", "htdemucs_6s"] if pipeline.roformer_available() else ["htdemucs_6s"],
         "device": pipeline.get_device(),
         "cuda": pipeline.get_device() == "cuda",
         "gpu": pipeline.get_gpu_name(),
@@ -222,6 +224,8 @@ def health():
         "models_loaded": pipeline.loaded_models(),
         "ffmpeg": pipeline.ffmpeg_available(),
         "transcriber": "basic-pitch" if pipeline.basic_pitch_model() is not None else None,
+        "tab_transcriber": "riff",
+        "beat_tracker": "beat_this" if _beats.available() else "librosa",
         "drum_transcriber": "adtof" if pipeline.adtof_available() else "onsets",
         "projects_dir": str(settings.projects_dir()),
         "projects": True,

@@ -79,7 +79,7 @@ export function tuplesToMidiEvents(tuples: NoteTuple[] | undefined, grid: BeatGr
       id: `${prefix}-${idx + 1}`,
       midi: pitch,
       startBeat: Math.max(0, startBeat),
-      durationBeats: Math.max(0.0625, ((end - start) * grid.bpm) / 60),
+      durationBeats: Math.max(0.0625, timeToBeat(grid, end) - startBeat),
       velocity: Math.max(1, Math.min(127, Math.round(velocity))),
       channel,
       label: midiToNoteName(pitch),

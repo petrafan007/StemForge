@@ -44,6 +44,8 @@ export interface AppSettings {
   midi: { quantize: QuantizeGrid; minVelocity: number; ppq: 480 | 960 };
   projects: { folder: string; autosave: boolean; includeOriginalInSfg: boolean; reopenLastProject: boolean };
   desktop: { keepEngineRunning: boolean };
+  /** Playhead / tab-highlight delay in ms on top of the measured audio output latency (+ = later). */
+  playback: { avSyncMs: number };
   exportDefaults: { audio: Record<string, unknown>; midi: Record<string, unknown> };
 }
 
@@ -160,6 +162,7 @@ export function defaultSettings(): AppSettings {
     midi: { quantize: '1/16', minVelocity: 30, ppq: 480 },
     projects: { folder: '', autosave: true, includeOriginalInSfg: true, reopenLastProject: true },
     desktop: { keepEngineRunning: false },
+    playback: { avSyncMs: 0 },
     exportDefaults: { audio: {}, midi: {} },
   };
 }

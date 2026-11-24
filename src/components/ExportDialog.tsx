@@ -3,6 +3,7 @@ import { Download, Loader2 } from 'lucide-react';
 import type { MidiNoteEvent, NotationPart, QuantizeGrid, SongProject, StemId, StemMixerState } from '../types/music';
 import { projectStemIds, stemLabel } from '../types/music';
 import { drumHitsToMidiEvents, encodeMidiFile, quantizeDrumHits, quantizeMidiNotes, type MidiTrackInput } from '../audio/midiEncoder';
+import { tempoChangesFor } from '../audio/timeline';
 import { GM_PROGRAMS } from '../audio/gmPrograms';
 import { encodeWav, mixStems, preventClipping } from '../audio/clientExport';
 import { exportAudioOnServer } from '../audio/serverApi';
@@ -439,6 +440,7 @@ function MidiExport({ project, transpose, settings, onRemember }: ExportDialogPr
 
   const run = async () => {
     setResult(null);
+    const tempoChanges = tempoChangesFor(project);
     const chosen = ids.filter((id) => selected[id]);
     if (chosen.length === 0) return setResult({ kind: 'error', text: 'Select at least one track.' });
     try {
@@ -446,7 +448,7 @@ function MidiExport({ project, transpose, settings, onRemember }: ExportDialogPr
         const dir = await pickDirectory('stemforge-midi-folder');
         const names: string[] = [];
         for (const id of chosen) {
-          const bytes = encodeMidiFile({ bpm: project.bpm, timeSignature: project.timeSignature, ticksPerQuarter: ppq, tracks: [trackFor(id)] });
+          const bytes = encodeMidiFile({ bpm: project.bpm, tempoChanges, timeSignature: project.timeSignature, ticksPerQuarter: ppq, tracks: [trackFor(id)] });
           const name = `${sanitizeFileName(`${baseName} - ${label(id)}`)}.mid`;
           if (dir) await writeFileInDirectory(dir, name, toBlob(bytes));
           else downloadBlob(toBlob(bytes), name);
@@ -456,6 +458,7 @@ function MidiExport({ project, transpose, settings, onRemember }: ExportDialogPr
       } else {
         const bytes = encodeMidiFile({
           bpm: project.bpm,
+          tempoChanges,
           timeSignature: project.timeSignature,
           ticksPerQuarter: ppq,
           tracks: chosen.map(trackFor),

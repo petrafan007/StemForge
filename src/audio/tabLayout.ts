@@ -12,6 +12,8 @@ import type { TabNoteEvent } from '../types/music';
 export interface TabLayoutNote {
   id: string;
   col: number; // absolute grid column
+  beat: number; // real (unquantized) start, in beats - what the playhead highlight follows
+  endBeat: number; // real end (cut at the next note on the same string)
   stringIndex: number;
   fret: number;
   midi: number;
@@ -97,6 +99,8 @@ export function quantizeTabNotes(
     const q = {
       id: n.id,
       col,
+      beat: n.startBeat,
+      endBeat: n.startBeat + Math.max(0.05, n.durationBeats),
       stringIndex: n.stringIndex,
       fret: n.fret,
       midi: n.midi,
@@ -106,8 +110,14 @@ export function quantizeTabNotes(
     const prev = byKey.get(key);
     if (prev) {
       merged += 1;
-      if (q.velocity > prev.velocity) byKey.set(key, { ...q, durSteps: Math.max(q.durSteps, prev.durSteps) });
-      else prev.durSteps = Math.max(prev.durSteps, q.durSteps);
+      const beat = Math.min(prev.beat, q.beat);
+      const endBeat = Math.max(prev.endBeat, q.endBeat);
+      if (q.velocity > prev.velocity) byKey.set(key, { ...q, beat, endBeat, durSteps: Math.max(q.durSteps, prev.durSteps) });
+      else {
+        prev.durSteps = Math.max(prev.durSteps, q.durSteps);
+        prev.beat = beat;
+        prev.endBeat = endBeat;
+      }
     } else {
       byKey.set(key, q);
     }
@@ -118,6 +128,7 @@ export function quantizeTabNotes(
   for (const n of out) {
     const prev = lastOnString.get(n.stringIndex);
     if (prev && prev.col + prev.durSteps > n.col) prev.durSteps = Math.max(1, n.col - prev.col);
+    if (prev && prev.endBeat > n.beat) prev.endBeat = Math.max(prev.beat + 0.05, n.beat);
     lastOnString.set(n.stringIndex, n);
   }
   return { notes: out, merged };

@@ -136,3 +136,30 @@ test('triplet / off quantize and Type 0 MIDI files', () => {
   assert.equal((bytes[8] << 8) | bytes[9], 0); // format 0
   assert.equal((bytes[10] << 8) | bytes[11], 1); // single track
 });
+
+test('a tempo map maps beats to the real beat times and survives half / double time', async () => {
+  const { mapBpm, scaleBeatMap, shiftBeatMap, tempoChanges } = await import('./timeline');
+  const { gridWithChanges } = await import('./projectModel');
+  // a band that speeds up: beats 0.5 s apart, then 0.4 s apart
+  const beatTimes = [-0.2, 0.3, 0.8, 1.3, 1.8, 2.2, 2.6, 3.0, 3.4];
+  const grid = { bpm: mapBpm(beatTimes), beatOffsetSec: beatTimes[0], beatTimes };
+  assert.ok(Math.abs(timeToBeat(grid, 0.3) - 1) < 1e-9);
+  assert.ok(Math.abs(timeToBeat(grid, 2.4) - 5.5) < 1e-9);
+  assert.ok(Math.abs(beatToTime(grid, 5.5) - 2.4) < 1e-9);
+  for (const t of [-1, 0, 0.55, 2.95, 5]) assert.ok(Math.abs(beatToTime(grid, timeToBeat(grid, t)) - t) < 1e-9);
+  assert.equal(scaleBeatMap(beatTimes, 0.5).length, 5);
+  assert.equal(scaleBeatMap(beatTimes, 2).length, 17);
+  assert.deepEqual(shiftBeatMap([1, 2], 0.5), [1.5, 2.5]);
+  const changes = tempoChanges(grid, 8);
+  assert.equal(changes[0].bpm, 120);
+  assert.equal(changes[1].beat, 4);
+  assert.ok(Math.abs(changes[1].bpm - 150) < 1e-6);
+  // ½× keeps the map (every other beat); typing another tempo switches to a fixed grid
+  const half = gridWithChanges(grid, { bpm: grid.bpm / 2 });
+  assert.deepEqual(half.beatTimes, scaleBeatMap(beatTimes, 0.5));
+  const typed = gridWithChanges(grid, { bpm: 97 });
+  assert.equal(typed.beatTimes, undefined);
+  assert.equal(typed.bpm, 97);
+  const shifted = gridWithChanges(grid, { beatOffsetSec: -0.1 });
+  assert.ok(Math.abs(shifted.beatTimes![1] - 0.4) < 1e-9);
+});
