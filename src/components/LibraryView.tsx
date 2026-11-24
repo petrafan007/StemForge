@@ -7,7 +7,6 @@ import {
   ChevronUp,
   Copy,
   Cpu,
-  Download,
   FileAudio,
   Music,
   RefreshCw,
@@ -17,13 +16,12 @@ import type { SeparationProgress, SongProject } from '../types/music';
 import { DEMO_SONG_LIST, type DemoSongBlueprint } from '../audio/demoSongs';
 import { formatKeySignature } from '../audio/notationEngine';
 import {
-  GPU_REQUIREMENTS_CONTENT,
-  GPU_SERVER_PY_CONTENT,
   checkGpuServerHealth,
+  unloadGpuModel,
   type GpuHealthStatus,
   type GpuServerConfig,
 } from '../audio/gpuClient';
-import { triggerTextDownload } from '../utils/download';
+import { FILE_INPUT_ACCEPT } from '../audio/stemSeparator';
 
 interface LibraryViewProps {
   currentProject: SongProject;
@@ -40,12 +38,13 @@ interface LibraryViewProps {
   onDismissError: () => void;
 }
 
-const SETUP_COMMANDS = `python -m venv stemforge-gpu
-# Windows PowerShell: .\\stemforge-gpu\\Scripts\\Activate.ps1
-# Linux / Mac:        source stemforge-gpu/bin/activate
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-pip install -r requirements.txt
-uvicorn gpu_server:app --host 127.0.0.1 --port 8000`;
+const SETUP_COMMANDS = `# One-time setup (PowerShell, from the StemForge folder):
+cd local-gpu-server
+.\\setup_windows.ps1
+cd ..
+
+# Every time: start the GPU server + web app together
+.\\start-stemforge.ps1`;
 
 export function LibraryView({
   currentProject,
@@ -67,6 +66,20 @@ export function LibraryView({
   const [gpuCheckError, setGpuCheckError] = useState<string | null>(null);
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const [copiedCmds, setCopiedCmds] = useState(false);
+  const [unloadMessage, setUnloadMessage] = useState<string | null>(null);
+
+  const handleUnloadGpu = async () => {
+    setUnloadMessage(null);
+    try {
+      const unloaded = await unloadGpuModel(gpuConfig.serverUrl);
+      setUnloadMessage(unloaded ? 'Demucs model released from GPU memory.' : 'GPU memory was already free.');
+      const status = await checkGpuServerHealth(gpuConfig.serverUrl).catch(() => null);
+      if (status) onUpdateGpuHealth(status);
+    } catch (err) {
+      setUnloadMessage(err instanceof Error ? err.message : 'Could not reach the GPU server.');
+    }
+    window.setTimeout(() => setUnloadMessage(null), 4000);
+  };
 
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -110,8 +123,8 @@ export function LibraryView({
           <div>
             <h2 className="font-display text-base font-bold text-white">Separation Engine</h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Use your local NVIDIA RTX GPU running Meta htdemucs_6s for studio-grade neural
-              separation, or run instantly in the browser with STFT DSP.
+              Use your local NVIDIA RTX GPU (Meta htdemucs_6s separation + Spotify Basic Pitch
+              polyphonic MIDI), or run instantly in the browser with STFT DSP.
             </p>
           </div>
 
@@ -214,11 +227,19 @@ export function LibraryView({
                 {gpuHealth.vramGb && (
                   <>
                     <span aria-hidden="true">·</span>
-                    <span>{gpuHealth.vramGb} GB VRAM</span>
+                    <span>
+                      {gpuHealth.vramFreeGb !== undefined
+                        ? `${gpuHealth.vramFreeGb} / ${gpuHealth.vramGb} GB VRAM free`
+                        : `${gpuHealth.vramGb} GB VRAM`}
+                    </span>
                   </>
                 )}
                 <span aria-hidden="true">·</span>
                 <span>{gpuHealth.model}</span>
+                <span aria-hidden="true">·</span>
+                <span>
+                  {gpuHealth.transcriber ? 'Polyphonic MIDI (Basic Pitch)' : 'Basic Pitch not installed'}
+                </span>
                 <span aria-hidden="true">·</span>
                 <span>{gpuHealth.cuda ? 'CUDA Ready' : 'CPU Mode'}</span>
               </div>
@@ -239,24 +260,18 @@ export function LibraryView({
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() =>
-                    triggerTextDownload(GPU_SERVER_PY_CONTENT, 'gpu_server.py', 'text/x-python;charset=utf-8')
-                  }
+                  onClick={() => void handleUnloadGpu()}
+                  title="Release the separation model from VRAM so other GPU apps (e.g. ComfyUI) can use it"
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#1B1F27] hover:bg-[#252B36] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
-                  <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Download gpu_server.py</span>
+                  <Cpu className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Free GPU Memory</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    triggerTextDownload(GPU_REQUIREMENTS_CONTENT, 'requirements.txt')
-                  }
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#1B1F27] hover:bg-[#252B36] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Download requirements.txt</span>
-                </button>
+                {unloadMessage && (
+                  <span role="status" className="text-xs font-mono text-slate-300">
+                    {unloadMessage}
+                  </span>
+                )}
               </div>
 
               <button
@@ -265,7 +280,7 @@ export function LibraryView({
                 onClick={() => setShowSetupGuide((prev) => !prev)}
                 className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-400 hover:text-amber-300 cursor-pointer whitespace-nowrap shrink-0"
               >
-                <span>{showSetupGuide ? 'Hide RTX 4070 Setup Guide' : 'Show RTX 4070 Setup Guide'}</span>
+                <span>{showSetupGuide ? 'Hide GPU Setup Guide' : 'Show GPU Setup Guide'}</span>
                 {showSetupGuide ? (
                   <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" />
                 ) : (
@@ -278,9 +293,8 @@ export function LibraryView({
               <div className="bg-[#0B0D10] border border-white/[0.08] rounded-md p-4 flex flex-col gap-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs text-slate-300">
-                    Place <code className="font-mono text-amber-300">gpu_server.py</code> and{' '}
-                    <code className="font-mono text-amber-300">requirements.txt</code> in a folder
-                    (Python 3.10/3.11 + FFmpeg installed), then run:
+                    The GPU server lives in <code className="font-mono text-amber-300">local-gpu-server/</code>{' '}
+                    (needs Python 3.10–3.12, FFmpeg and an NVIDIA driver). From the StemForge folder run:
                   </p>
                   <button
                     type="button"
@@ -305,8 +319,10 @@ export function LibraryView({
                 </pre>
                 <p className="text-xs text-slate-400">
                   The first song downloads Meta&apos;s <span className="font-mono text-slate-300">htdemucs_6s</span>{' '}
-                  weights once (~200 MB) and caches them in GPU VRAM. On an RTX 4070, each 4-minute
-                  song separates in ~8–15 seconds.
+                  weights once (~50 MB, kept in <code className="font-mono">local-gpu-server/models</code>). On an
+                  RTX 4070 a 4-minute song separates in seconds, then Basic Pitch transcribes chords and melodies
+                  for MIDI, tabs and sheet music. If another app (e.g. ComfyUI) is using the GPU, click Free GPU
+                  Memory or unload that app&apos;s models first.
                 </p>
               </div>
             )}
@@ -320,8 +336,8 @@ export function LibraryView({
           <h2 className="font-display text-lg font-bold text-white">Import Audio Track</h2>
           <p className="text-sm text-slate-400 mt-1">
             {gpuConfig.mode === 'gpu'
-              ? `Active engine: Local GPU Demucs (${gpuConfig.serverUrl}). Audio stays on your PC and separates into studio-grade Vocals, Guitar, Bass, Drums, and Keyboards.`
-              : 'Active engine: Browser STFT DSP. Upload MP3, WAV, FLAC, OGG, M4A, or AAC files to separate locally with no setup.'}
+              ? `Active engine: Local GPU Demucs + Basic Pitch (${gpuConfig.serverUrl}). Audio stays on your PC and separates into Vocals, Guitar, Bass, Drums, and Keyboards with polyphonic MIDI. Video files work too.`
+              : 'Active engine: Browser STFT DSP. Upload MP3, WAV, FLAC, OGG, M4A, or AAC files to separate locally with no setup (MIDI is single-note only in this mode).'}
           </p>
         </div>
 
@@ -345,7 +361,7 @@ export function LibraryView({
           <input
             ref={fileInputRef}
             type="file"
-            accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a,.aac,.webm"
+            accept={FILE_INPUT_ACCEPT}
             onChange={(e) => {
               handleFiles(e.target.files);
               e.target.value = '';
@@ -360,10 +376,10 @@ export function LibraryView({
           </div>
 
           <p className="text-sm font-medium text-white">
-            Drag and drop an audio file here, or choose from your device
+            Drag and drop an audio or video file here, or choose from your device
           </p>
           <p className="text-xs font-mono text-slate-400 mt-1.5">
-            MP3 · WAV · FLAC · OGG · M4A · AAC · Splits into Vocals, Guitar, Bass, Drums, Keyboards
+            MP3 · WAV · FLAC · OGG · M4A · AAC · MP4 · MOV · MKV · Splits into Vocals, Guitar, Bass, Drums, Keyboards
           </p>
 
           <div className="mt-5">

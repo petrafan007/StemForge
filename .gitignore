@@ -22,3 +22,49 @@ local-gpu-server/venv/
 
 # Browser test artifacts
 .playwright-cli/
+
+# ------------------------------------------------------------------
+# Personal files, media, and generated output (never commit)
+# ------------------------------------------------------------------
+# Neural model weights / caches downloaded at runtime
+local-gpu-server/models/
+models/
+*.th
+*.pth
+*.onnx
+
+# Your own audio / video and anything StemForge exports
+my-audio/
+media/
+exports/
+output/
+stems/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.aac
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.mid
+*.midi
+*.musicxml
+*.mxl
+
+# Local runtime logs and temp files
+logs/
+*.pid
+tmp/
+
+# Editor / OS / assistant / integration settings
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.claude/
+CLAUDE.local.md
+*.local.json
+.mcp.json

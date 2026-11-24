@@ -134,7 +134,10 @@ export interface SongProject {
   drumHits: DrumHitEvent[];
   guitarNotes: MidiNoteEvent[];
   bassNotes: MidiNoteEvent[];
+  vocalNotes: MidiNoteEvent[];
   chords: ChordEvent[];
+  /** Which transcriber produced the melodic notes: 'basic-pitch' = polyphonic neural (GPU server), 'yin' = browser monophonic. */
+  transcriptionEngine?: 'basic-pitch' | 'yin' | 'demo';
 }
 
 export interface SeparationProgress {

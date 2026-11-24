@@ -97,6 +97,6 @@ test('separateViaGpuServer uploads audio, downloads all 5 WAV stems, and cleans 
   assert.equal(result.wavBytes.bass.byteLength, 4);
   assert.equal(result.wavBytes.drums.byteLength, 4);
   assert.equal(result.wavBytes.keyboards.byteLength, 4);
-  assert.ok(calledUrls.some((c) => c === 'POST http://127.0.0.1:8000/separate?piano_only=false'));
+  assert.ok(calledUrls.some((c) => c === 'POST http://127.0.0.1:8000/separate?piano_only=false&transcribe=true'));
   assert.ok(calledUrls.some((c) => c === 'DELETE http://127.0.0.1:8000/stems/job99'));
 });

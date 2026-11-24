@@ -1,10 +1,24 @@
-# Install PyTorch with CUDA first for your NVIDIA RTX 4070:
-# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+# StemForge local GPU server dependencies.
 #
-# Then install these packages:
-demucs>=4.0.1
+# 1) PyTorch with CUDA is installed FIRST by setup_windows.ps1 (pinned, CUDA 12.6 build):
+#      pip install torch==2.7.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu126
+#
+# 2) Then these packages:
+demucs==4.0.1
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.12
 soundfile>=0.12.1
-numpy>=1.26.0
+numpy>=1.26.0,<2.3
+
+# Polyphonic audio-to-MIDI (Spotify Basic Pitch) runtime, ONNX backend on CPU.
+# basic-pitch itself is installed with --no-deps (its metadata pulls an old TensorFlow on
+# Python 3.11+), so its real runtime dependencies are listed here explicitly.
+onnxruntime>=1.18
+librosa>=0.10.2
+pretty-midi>=0.2.10
+mir-eval>=0.7
+resampy>=0.2.2,<0.4.3
+scikit-learn>=1.3
+scipy>=1.11
+typing-extensions>=4.8

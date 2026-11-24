@@ -13,9 +13,29 @@ import {
   transcribeStemToMidi,
 } from './stemDsp';
 import { separateStereoStemsStft, type SeparatedStemsPcm } from './stftSeparator';
-import { separateViaGpuServer, type GpuServerConfig } from './gpuClient';
+import {
+  gpuNotesToMidiEvents,
+  separateViaGpuServer,
+  type GpuServerConfig,
+  type GpuTranscription,
+} from './gpuClient';
 
-export const ACCEPTED_AUDIO_EXTENSIONS = ['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac', '.webm'];
+export const ACCEPTED_AUDIO_EXTENSIONS = ['.mp3', '.wav', '.flac', '.ogg', '.opus', '.m4a', '.aac', '.wma', '.aif', '.aiff'];
+export const ACCEPTED_VIDEO_EXTENSIONS = ['.mp4', '.m4v', '.mov', '.mkv', '.webm', '.avi'];
+
+/** Value for <input type="file" accept="..."> covering every supported audio & video format. */
+export const FILE_INPUT_ACCEPT = [
+  'audio/*',
+  'video/*',
+  ...ACCEPTED_AUDIO_EXTENSIONS,
+  ...ACCEPTED_VIDEO_EXTENSIONS,
+].join(',');
+
+export function isVideoFile(file: File): boolean {
+  if (file.type.startsWith('video/')) return true;
+  const lower = file.name.toLowerCase();
+  return ACCEPTED_VIDEO_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
 
 export function detectFormatLabel(fileName: string): string {
   const ext = fileName.split('.').pop()?.toUpperCase();
@@ -24,7 +44,7 @@ export function detectFormatLabel(fileName: string): string {
 }
 
 export function isSupportedAudioFile(file: File): boolean {
-  if (file.type.startsWith('audio/')) return true;
+  if (file.type.startsWith('audio/') || isVideoFile(file)) return true;
   const lower = file.name.toLowerCase();
   return ACCEPTED_AUDIO_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
@@ -116,44 +136,70 @@ async function buildTranscribedProject(params: {
   sampleRate: number;
   duration: number;
   engineLabel: string;
+  transcription?: GpuTranscription | null;
   onProgress?: (p: SeparationProgress) => void;
 }): Promise<SongProject> {
-  const { file, stemBuffers, mixMono, sampleRate, duration, engineLabel, onProgress } = params;
+  const { file, stemBuffers, mixMono, sampleRate, duration, engineLabel, transcription, onProgress } =
+    params;
+  const neural = transcription?.engine === 'basic-pitch' && transcription.notes ? transcription : null;
 
-  onProgress?.({ stage: 'Transcribing Keyboards & Drums to MIDI', percent: 83 });
+  onProgress?.({
+    stage: neural ? 'Loading polyphonic MIDI from Basic Pitch' : 'Transcribing Keyboards & Drums to MIDI',
+    percent: 83,
+  });
   await pauseUi();
 
   const analysisFrames = Math.min(mixMono.length, Math.floor(sampleRate * 90));
-  const bpm = estimateBpm(mixMono.subarray(0, analysisFrames), sampleRate);
+  const bpm =
+    neural?.bpm && neural.bpm > 30 && neural.bpm < 300
+      ? neural.bpm
+      : estimateBpm(mixMono.subarray(0, analysisFrames), sampleRate);
 
   const keysMono = bufferToMono(stemBuffers.keyboards, analysisFrames);
   const drumsMono = bufferToMono(stemBuffers.drums, analysisFrames);
   const guitarMono = bufferToMono(stemBuffers.guitar, analysisFrames);
   const bassMono = bufferToMono(stemBuffers.bass, analysisFrames);
 
-  const keyboardMidi = transcribeStemToMidi(keysMono, sampleRate, bpm, {
-    minFreq: 130,
-    maxFreq: 1050,
-    channel: 0,
-    prefix: 'keys',
-  });
+  const keyboardMidi = neural
+    ? gpuNotesToMidiEvents(neural.notes?.keyboards, bpm, 'keys')
+    : transcribeStemToMidi(keysMono, sampleRate, bpm, {
+        minFreq: 130,
+        maxFreq: 1050,
+        channel: 0,
+        prefix: 'keys',
+      });
   const drumHits = transcribeDrumsToMidi(drumsMono, sampleRate, bpm);
 
   onProgress?.({ stage: 'Extracting Guitar & Bass Tabs, Chords & Sheet Music', percent: 93 });
   await pauseUi();
 
-  const guitarNotes = transcribeStemToMidi(guitarMono, sampleRate, bpm, {
-    minFreq: 82,
-    maxFreq: 880,
-    channel: 0,
-    prefix: 'gtr',
-  });
-  const bassNotes = transcribeStemToMidi(bassMono, sampleRate, bpm, {
-    minFreq: 41,
-    maxFreq: 260,
-    channel: 0,
-    prefix: 'bass',
-  });
+  let guitarNotes;
+  let bassNotes;
+  let vocalNotes;
+  if (neural) {
+    guitarNotes = gpuNotesToMidiEvents(neural.notes?.guitar, bpm, 'gtr');
+    bassNotes = gpuNotesToMidiEvents(neural.notes?.bass, bpm, 'bass');
+    vocalNotes = gpuNotesToMidiEvents(neural.notes?.vocals, bpm, 'vox');
+  } else {
+    guitarNotes = transcribeStemToMidi(guitarMono, sampleRate, bpm, {
+      minFreq: 82,
+      maxFreq: 880,
+      channel: 0,
+      prefix: 'gtr',
+    });
+    bassNotes = transcribeStemToMidi(bassMono, sampleRate, bpm, {
+      minFreq: 41,
+      maxFreq: 260,
+      channel: 0,
+      prefix: 'bass',
+    });
+    vocalNotes = transcribeStemToMidi(bufferToMono(stemBuffers.vocals, analysisFrames), sampleRate, bpm, {
+      minFreq: 80,
+      maxFreq: 1000,
+      channel: 0,
+      prefix: 'vox',
+    });
+  }
 
   const chordLen = Math.min(guitarMono.length, keysMono.length, bassMono.length);
   const harmonicForChords = new Float32Array(chordLen);
@@ -199,7 +245,9 @@ async function buildTranscribedProject(params: {
     drumHits,
     guitarNotes,
     bassNotes,
+    vocalNotes,
     chords,
+    transcriptionEngine: neural ? 'basic-pitch' : 'yin',
   };
 }
 
@@ -216,7 +264,7 @@ export async function processUploadedAudioFile(
 ): Promise<SongProject> {
   if (!isSupportedAudioFile(file)) {
     throw new Error(
-      `Unsupported file "${file.name}". Please upload MP3, WAV, FLAC, OGG, M4A, or AAC audio.`
+      `Unsupported file "${file.name}". Please upload audio (MP3, WAV, FLAC, OGG, M4A, AAC) or video (MP4, MOV, MKV, WEBM).`
     );
   }
 
@@ -260,6 +308,7 @@ export async function processUploadedAudioFile(
       sampleRate: sr,
       duration: refBuf.duration,
       engineLabel: `${gpuShort} (${meta.model} · ${meta.elapsed_sec}s)`,
+      transcription: meta.transcription,
       onProgress,
     });
   }
@@ -274,7 +323,9 @@ export async function processUploadedAudioFile(
     decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
   } catch {
     throw new Error(
-      `Could not decode "${file.name}". Ensure the file is a valid MP3, WAV, FLAC, OGG, or M4A recording.`
+      isVideoFile(file)
+        ? `Your browser could not read the audio in "${file.name}". Switch to the Local GPU engine (it uses FFmpeg to read any video).`
+        : `Could not decode "${file.name}". Ensure the file is a valid MP3, WAV, FLAC, OGG, or M4A recording.`
     );
   }
 

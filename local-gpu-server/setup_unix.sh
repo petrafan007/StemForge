@@ -8,7 +8,7 @@ echo "=== StemForge Local GPU Server Setup ==="
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-  echo "Error: python3 not found. Please install Python 3.10 or 3.11." >&2
+  echo "Error: python3 not found. Please install Python 3.10 - 3.12." >&2
   exit 1
 fi
 
@@ -26,15 +26,16 @@ fi
 .venv/bin/python -m pip install --upgrade pip
 
 if command -v nvidia-smi >/dev/null 2>&1; then
-  echo "NVIDIA GPU detected — installing PyTorch with CUDA 12.4 ..."
-  .venv/bin/python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+  echo "NVIDIA GPU detected — installing PyTorch 2.7.1 with CUDA 12.6 ..."
+  .venv/bin/python -m pip install "torch==2.7.1" "torchaudio==2.7.1" --index-url https://download.pytorch.org/whl/cu126
 else
   echo "Installing standard PyTorch (Apple Silicon MPS / CPU) ..."
-  .venv/bin/python -m pip install torch torchaudio
+  .venv/bin/python -m pip install "torch==2.7.1" "torchaudio==2.7.1"
 fi
 
-echo "Installing Demucs and FastAPI dependencies ..."
+echo "Installing Demucs, FastAPI and transcription dependencies ..."
 .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install --no-deps "basic-pitch==0.4.0"
 
 .venv/bin/python -c "import torch; print('CUDA Available:', torch.cuda.is_available(), '| Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else ('MPS' if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() else 'CPU'))"
 

@@ -10,7 +10,7 @@ import type {
 } from './types/music';
 import { MultiStemAudioEngine } from './audio/audioEngine';
 import { DEMO_SONG_LIST, buildDemoSongProject, type DemoSongBlueprint } from './audio/demoSongs';
-import { processUploadedAudioFile } from './audio/stemSeparator';
+import { FILE_INPUT_ACCEPT, processUploadedAudioFile } from './audio/stemSeparator';
 import {
   loadSavedGpuConfig,
   saveGpuConfig,
@@ -320,7 +320,7 @@ export default function App() {
       <input
         ref={globalFileInputRef}
         type="file"
-        accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a,.aac,.webm"
+        accept={FILE_INPUT_ACCEPT}
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) void handleUploadFile(file);
@@ -439,9 +439,9 @@ export default function App() {
         <div className="fixed inset-0 z-50 bg-[#0B0D10]/90 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-none">
           <div className="max-w-md w-full border-2 border-dashed border-amber-500 rounded-xl p-10 text-center bg-[#13161C]">
             <Upload className="w-8 h-8 text-amber-400 mx-auto mb-3" aria-hidden="true" />
-            <p className="font-display text-lg font-bold text-white">Drop audio to separate stems</p>
+            <p className="font-display text-lg font-bold text-white">Drop audio or video to separate stems</p>
             <p className="text-xs font-mono text-slate-400 mt-1">
-              MP3 · WAV · FLAC · OGG · M4A · AAC
+              MP3 · WAV · FLAC · OGG · M4A · AAC · MP4 · MOV · MKV
             </p>
           </div>
         </div>

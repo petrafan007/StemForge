@@ -105,8 +105,11 @@ export function getTuningPreset(
 }
 
 /**
- * Maps MIDI note events onto optimal guitar or bass string/fret positions,
- * minimizing hand position jumps while keeping frets inside [0, maxFret].
+ * Maps MIDI note events onto playable guitar or bass string/fret positions.
+ *
+ * Notes that start together (chords from the polyphonic transcriber) are placed as a
+ * group on distinct strings, choosing the fingering with the smallest hand stretch that
+ * stays near the current hand position. Single notes minimize position jumps.
  */
 export function mapNotesToTab(
   notes: MidiNoteEvent[],
@@ -114,56 +117,113 @@ export function mapNotesToTab(
   transpose = 0,
   maxFret = 19
 ): TabNoteEvent[] {
-  const sorted = [...notes].sort((a, b) => a.startBeat - b.startBeat || a.midi - b.midi);
+  const numStrings = tuning.openMidi.length;
   const lowestOpen = Math.min(...tuning.openMidi);
   const highestPossible = Math.max(...tuning.openMidi) + maxFret;
+  const CHORD_WINDOW_BEATS = 0.08;
+
+  const prepared = notes
+    .map((note) => {
+      let targetMidi = note.midi + transpose;
+      // Octave-fold gracefully if outside instrument range
+      while (targetMidi < lowestOpen) targetMidi += 12;
+      while (targetMidi > highestPossible) targetMidi -= 12;
+      return { note, midi: targetMidi };
+    })
+    .sort((a, b) => a.note.startBeat - b.note.startBeat || b.midi - a.midi);
+
+  // Group simultaneous onsets into chords
+  const groups: Array<typeof prepared> = [];
+  for (const item of prepared) {
+    const last = groups[groups.length - 1];
+    if (last && item.note.startBeat - last[0].note.startBeat <= CHORD_WINDOW_BEATS) {
+      // Same pitch twice in one chord is a transcription duplicate: keep the louder one
+      const dup = last.findIndex((x) => x.midi === item.midi);
+      if (dup === -1) last.push(item);
+      else if (item.note.velocity > last[dup].note.velocity) last[dup] = item;
+    } else {
+      groups.push([item]);
+    }
+  }
 
   let anchorFret = 5;
   const result: TabNoteEvent[] = [];
 
-  for (const note of sorted) {
-    let targetMidi = note.midi + transpose;
-    // Octave-fold gracefully if outside instrument range
-    while (targetMidi < lowestOpen) targetMidi += 12;
-    while (targetMidi > highestPossible) targetMidi -= 12;
+  const noteCost = (fret: number) =>
+    (fret === 0 ? 1.5 : Math.abs(fret - anchorFret)) + (fret > 12 ? (fret - 12) * 0.6 : 0);
 
-    let bestString = -1;
-    let bestFret = -1;
-    let bestCost = Number.POSITIVE_INFINITY;
+  for (const rawGroup of groups) {
+    // Keep at most one note per string, preferring the loudest notes
+    let group = [...rawGroup];
+    if (group.length > numStrings) {
+      group = group
+        .sort((a, b) => b.note.velocity - a.note.velocity)
+        .slice(0, numStrings);
+    }
+    group.sort((a, b) => b.midi - a.midi);
 
-    for (let s = 0; s < tuning.openMidi.length; s++) {
-      const fret = targetMidi - tuning.openMidi[s];
-      if (fret < 0 || fret > maxFret) continue;
+    let best: { strings: number[]; frets: number[]; cost: number } | null = null;
+    while (group.length > 0 && !best) {
+      const used = new Array<boolean>(numStrings).fill(false);
+      const strings: number[] = [];
+      const frets: number[] = [];
 
-      // Prefer frets close to current hand position, with gentle bonus for open strings & lower frets
-      const distanceCost = fret === 0 ? 1.5 : Math.abs(fret - anchorFret);
-      const highFretPenalty = fret > 12 ? (fret - 12) * 0.6 : 0;
-      const cost = distanceCost + highFretPenalty;
+      const search = (i: number, cost: number) => {
+        if (best && cost >= best.cost) return;
+        if (i === group.length) {
+          const fretted = frets.filter((f) => f > 0);
+          const span = fretted.length ? Math.max(...fretted) - Math.min(...fretted) : 0;
+          if (span > 5) return; // unplayable stretch
+          const total = cost + (span > 3 ? (span - 3) * 2.5 : 0);
+          if (!best || total < best.cost) best = { strings: [...strings], frets: [...frets], cost: total };
+          return;
+        }
+        for (let s = 0; s < numStrings; s++) {
+          if (used[s]) continue;
+          const fret = group[i].midi - tuning.openMidi[s];
+          if (fret < 0 || fret > maxFret) continue;
+          used[s] = true;
+          strings.push(s);
+          frets.push(fret);
+          search(i + 1, cost + noteCost(fret));
+          strings.pop();
+          frets.pop();
+          used[s] = false;
+        }
+      };
+      search(0, 0);
 
-      if (cost < bestCost) {
-        bestCost = cost;
-        bestString = s;
-        bestFret = fret;
+      if (!best) {
+        // No playable fingering for the whole chord: drop the quietest note and retry
+        let quietest = 0;
+        for (let k = 1; k < group.length; k++) {
+          if (group[k].note.velocity < group[quietest].note.velocity) quietest = k;
+        }
+        group.splice(quietest, 1);
       }
     }
 
-    if (bestString !== -1) {
-      if (bestFret > 0) {
-        anchorFret = Math.round(anchorFret * 0.6 + bestFret * 0.4);
-      }
+    if (!best) continue;
+    const chosen = best as { strings: number[]; frets: number[]; cost: number };
+    const frettedFrets = chosen.frets.filter((f) => f > 0);
+    if (frettedFrets.length) {
+      const mean = frettedFrets.reduce((sum, f) => sum + f, 0) / frettedFrets.length;
+      anchorFret = Math.round(anchorFret * 0.6 + mean * 0.4);
+    }
+    group.forEach((item, k) => {
       result.push({
-        id: note.id,
-        midi: targetMidi,
-        startBeat: note.startBeat,
-        durationBeats: note.durationBeats,
-        stringIndex: bestString,
-        fret: bestFret,
-        velocity: note.velocity,
+        id: item.note.id,
+        midi: item.midi,
+        startBeat: item.note.startBeat,
+        durationBeats: item.note.durationBeats,
+        stringIndex: chosen.strings[k],
+        fret: chosen.frets[k],
+        velocity: item.note.velocity,
       });
-    }
+    });
   }
 
-  return result;
+  return result.sort((a, b) => a.startBeat - b.startBeat || a.stringIndex - b.stringIndex);
 }
 
 /**

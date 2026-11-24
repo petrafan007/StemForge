@@ -1,5 +1,9 @@
-# Starts the StemForge Local GPU Separation Server on http://127.0.0.1:8000
-# Usage: .\start_windows.ps1
+# Starts the StemForge Local GPU Server on http://127.0.0.1:8000
+# Usage: .\start_windows.ps1 [-Port 8000]
+
+param(
+    [int]$Port = 8000
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -9,6 +13,9 @@ if (-not (Test-Path $venvPython)) {
 }
 
 Set-Location $PSScriptRoot
-Write-Host "Starting StemForge Local GPU Server on http://127.0.0.1:8000 ..." -ForegroundColor Cyan
+# Keep model weights inside this project (git-ignored), not the shared user torch cache.
+$env:TORCH_HOME = Join-Path $PSScriptRoot "models"
+
+Write-Host "Starting StemForge Local GPU Server on http://127.0.0.1:$Port ..." -ForegroundColor Cyan
 Write-Host "Press Ctrl+C to stop." -ForegroundColor DarkGray
-& $venvPython -m uvicorn gpu_server:app --host 127.0.0.1 --port 8000
+& $venvPython -m uvicorn gpu_server:app --host 127.0.0.1 --port $Port

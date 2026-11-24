@@ -670,6 +670,8 @@ export function buildDemoSongProject(
     drumHits,
     guitarNotes: toMidi(blueprint.guitar, 'gtr'),
     bassNotes: toMidi(blueprint.bass, 'bass'),
+    vocalNotes: toMidi(blueprint.vocals, 'vox'),
     chords,
+    transcriptionEngine: 'demo',
   };
 }

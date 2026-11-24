@@ -1,9 +1,10 @@
 import { useMemo, useRef, useState } from 'react';
-import { Check, Copy, Download } from 'lucide-react';
+import { Check, Copy, Download, FileMusic } from 'lucide-react';
 import type {
   BassTuningId,
   ChordEvent,
   GuitarTuningId,
+  MidiNoteEvent,
   NotationMode,
   SongProject,
   StringInstrument,
@@ -21,6 +22,7 @@ import {
   midiToNoteName,
   type ChordVoicing,
 } from '../audio/notationEngine';
+import { encodeMusicXml, type MusicXmlPartInput } from '../audio/musicXml';
 import { slugifyFilename, triggerTextDownload } from '../utils/download';
 
 interface NotationViewProps {
@@ -261,6 +263,78 @@ export function NotationView({
     );
   };
 
+  /**
+   * Exports MusicXML for MuseScore / Guitar Pro / Sibelius etc.
+   * 'instrument' = the selected guitar or bass (notation + TAB staff);
+   * 'score' = full band score: Vocals, Guitar (+TAB), Bass (+TAB), Keyboards (grand staff).
+   */
+  const handleDownloadMusicXml = (scope: 'instrument' | 'score') => {
+    const shift = (list: MidiNoteEvent[], lo: number, hi: number) =>
+      list.map((n) => ({ ...n, midi: Math.max(lo, Math.min(hi, n.midi + transpose)) }));
+    const gTuning = GUITAR_TUNINGS[guitarTuning];
+    const bTuning = BASS_TUNINGS[bassTuning];
+    const guitarPart: MusicXmlPartInput = {
+      id: 'P2',
+      name: `Guitar (${gTuning.label.split(' (')[0]})`,
+      abbreviation: 'Gtr.',
+      clef: 'guitar',
+      octaveDown: true,
+      tab: { tuning: gTuning, notes: mapNotesToTab(project.guitarNotes, gTuning, transpose) },
+      midiProgram: 25,
+      midiChannel: 1,
+    };
+    const bassPart: MusicXmlPartInput = {
+      id: 'P3',
+      name: 'Bass',
+      abbreviation: 'Bass',
+      clef: 'bass',
+      octaveDown: true,
+      tab: { tuning: bTuning, notes: mapNotesToTab(project.bassNotes, bTuning, transpose) },
+      midiProgram: 33,
+      midiChannel: 2,
+    };
+    const parts: MusicXmlPartInput[] =
+      scope === 'instrument'
+        ? [instrument === 'guitar' ? { ...guitarPart, id: 'P1' } : { ...bassPart, id: 'P1' }]
+        : [
+            {
+              id: 'P1',
+              name: 'Vocals',
+              abbreviation: 'Vox.',
+              clef: 'treble',
+              notes: shift(project.vocalNotes ?? [], 36, 96),
+              midiProgram: 52,
+              midiChannel: 3,
+            },
+            guitarPart,
+            bassPart,
+            {
+              id: 'P4',
+              name: 'Keyboards',
+              abbreviation: 'Keys',
+              clef: 'grand',
+              notes: shift(project.keyboardMidi, 21, 108),
+              midiProgram: 0,
+              midiChannel: 0,
+            },
+          ];
+    const xml = encodeMusicXml({
+      title: project.title,
+      subtitle: 'Transcribed with StemForge',
+      bpm: project.bpm,
+      keyRootPc: (((project.keyRootPc + transpose) % 12) + 12) % 12,
+      keyMode: project.keyMode,
+      beatsPerMeasure,
+      parts,
+    });
+    const suffix = scope === 'instrument' ? instrument : 'full_score';
+    triggerTextDownload(
+      xml,
+      `${slugifyFilename(project.title)}_${suffix}.musicxml`,
+      'application/vnd.recordare.musicxml+xml;charset=utf-8'
+    );
+  };
+
   const auditionChord = (rootPc: number, quality: ChordEvent['quality']) => {
     const baseMidi = instrument === 'guitar' ? 48 + rootPc : 36 + rootPc;
     const intervals =
@@ -389,7 +463,29 @@ export function NotationView({
         </div>
 
         {/* Mode-specific Export Actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {(mode === 'tabs' || mode === 'sheet') && (
+            <>
+              <button
+                type="button"
+                onClick={() => handleDownloadMusicXml('instrument')}
+                title="Open in MuseScore, Guitar Pro, Sibelius, etc. (standard notation + TAB staff)"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <FileMusic className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{instrument === 'guitar' ? 'Guitar' : 'Bass'} MusicXML</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDownloadMusicXml('score')}
+                title="Vocals, Guitar + TAB, Bass + TAB and Keyboards in one MusicXML score"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <FileMusic className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Full Score MusicXML</span>
+              </button>
+            </>
+          )}
           {mode === 'tabs' && (
             <>
               <button
