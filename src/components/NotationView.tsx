@@ -29,6 +29,7 @@ import { keyToFifths } from '../audio/musicXml';
 import { TabStaff } from './TabStaff';
 import { barCountTo, barStartsFor, toggleBarLine, DEFAULT_BAR_SETTINGS, type BarSettings } from '../audio/bars';
 import { useTabEditor } from './useTabEditor';
+import { useStickyHeightVar } from '../utils/stickyHeight';
 import type { PartEdit, TabEdits } from '../audio/tabEdits';
 import { ScoreView, printScore } from './ScoreView';
 
@@ -266,6 +267,8 @@ export function NotationView({
       return next;
     });
   const scoreApi = useRef<{ svgMarkup: () => string | null } | null>(null);
+  const controlsRef = useRef<HTMLDivElement | null>(null);
+  useStickyHeightVar(controlsRef, '--sf-notation-h');
   const tabWrapRef = useRef<HTMLDivElement | null>(null);
   const [tabWidth, setTabWidth] = useState(1100);
 
@@ -451,197 +454,203 @@ export function NotationView({
 
   return (
     <div className="max-w-[1440px] mx-auto px-4 sm:px-6 py-6 flex flex-col gap-5">
-      {/* Top Workspace Control Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Part switcher: (Rhythm) Guitar / Guitar 1 – Left / Guitar 2 – Right / Lead Guitar / Bass */}
-          <div
-            role="group"
-            aria-label="Part selector"
-            className="inline-flex flex-wrap items-center p-1 bg-[#13161C] border border-white/[0.08] rounded-md"
-          >
-            {availableParts.map((p) => (
-              <button
-                key={p}
-                type="button"
-                aria-pressed={part === p}
-                onClick={() => onChangePart(p)}
-                title={
-                  p === 'guitar1' || p === 'guitar2'
-                    ? `Only the ${p === 'guitar1' ? 'left' : 'right'}-panned guitar's own notes. ${partLabel(project, 'guitar')} shows both guitars together.`
-                    : undefined
-                }
-                className={`px-3.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  part === p
-                    ? p === 'bass'
-                      ? 'bg-sky-400 text-[#0B0D10] font-semibold'
-                      : 'bg-amber-500 text-[#0B0D10] font-semibold'
-                    : 'text-slate-300 hover:text-white'
-                }`}
-              >
-                {p === 'guitar1'
-                  ? 'Guitar 1 – Left'
-                  : p === 'guitar2'
-                    ? 'Guitar 2 – Right'
-                    : `${partLabel(project, p)} (${(p === 'bass' ? resolved.bass : resolved.guitar).openMidi.length}-String)`}
-              </button>
-            ))}
+      {/* Top Workspace Control Bar: sticks below the transport while scrolling */}
+      <div
+        ref={controlsRef}
+        className="sticky z-10 -mx-4 sm:-mx-6 -mt-6 px-4 sm:px-6 py-3 bg-[#0B0D10]/95 backdrop-blur-sm border-b border-white/[0.06]"
+        style={{ top: 'calc(var(--sf-header-h, 56px) + var(--sf-transport-h, 0px))' }}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Part switcher: (Rhythm) Guitar / Guitar 1 – Left / Guitar 2 – Right / Lead Guitar / Bass */}
+            <div
+              role="group"
+              aria-label="Part selector"
+              className="inline-flex flex-wrap items-center p-1 bg-[#13161C] border border-white/[0.08] rounded-md"
+            >
+              {availableParts.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  aria-pressed={part === p}
+                  onClick={() => onChangePart(p)}
+                  title={
+                    p === 'guitar1' || p === 'guitar2'
+                      ? `Only the ${p === 'guitar1' ? 'left' : 'right'}-panned guitar's own notes. ${partLabel(project, 'guitar')} shows both guitars together.`
+                      : undefined
+                  }
+                  className={`px-3.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    part === p
+                      ? p === 'bass'
+                        ? 'bg-sky-400 text-[#0B0D10] font-semibold'
+                        : 'bg-amber-500 text-[#0B0D10] font-semibold'
+                      : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  {p === 'guitar1'
+                    ? 'Guitar 1 – Left'
+                    : p === 'guitar2'
+                      ? 'Guitar 2 – Right'
+                      : `${partLabel(project, p)} (${(p === 'bass' ? resolved.bass : resolved.guitar).openMidi.length}-String)`}
+                </button>
+              ))}
+            </div>
+
+            {/* Notation Mode Switcher: Tabs / Chords / Sheet Music */}
+            <div
+              role="tablist"
+              aria-label="Notation display mode"
+              className="inline-flex items-center p-1 bg-[#13161C] border border-white/[0.08] rounded-md"
+            >
+              {(
+                [
+                  { id: 'tabs', label: 'Tablature' },
+                  { id: 'chords', label: 'Chords' },
+                  { id: 'sheet', label: 'Sheet Music' },
+                ] as Array<{ id: NotationMode; label: string }>
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === tab.id}
+                  onClick={() => setMode(tab.id)}
+                  className={`px-3.5 py-1.5 text-xs font-medium rounded whitespace-nowrap shrink-0 cursor-pointer ${
+                    mode === tab.id
+                      ? 'bg-white/20 text-white font-semibold'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Tuning selector (Auto = detected from the notes) */}
+            {(mode === 'tabs' || mode === 'sheet') && (
+              <label className="flex items-center gap-1.5 text-xs text-slate-400">
+                <span>Tuning</span>
+                {instrument === 'guitar' ? (
+                  <select
+                    aria-label="Guitar tuning"
+                    value={guitarTuning}
+                    onChange={(e) => onChangeGuitarTuning(e.target.value as GuitarTuningId | 'auto')}
+                    className="h-8 px-2.5 rounded bg-[#13161C] border border-white/[0.08] text-xs font-mono text-slate-200 cursor-pointer"
+                  >
+                    <option value="auto" className="bg-[#13161C]">
+                      Auto — detected {resolved.detectedGuitar.label}
+                    </option>
+                    {Object.values(GUITAR_TUNINGS).map((t) => (
+                      <option key={t.id} value={t.id} className="bg-[#13161C]">
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    aria-label="Bass tuning"
+                    value={bassTuning}
+                    onChange={(e) => onChangeBassTuning(e.target.value as BassTuningId | 'auto')}
+                    className="h-8 px-2.5 rounded bg-[#13161C] border border-white/[0.08] text-xs font-mono text-slate-200 cursor-pointer"
+                  >
+                    <option value="auto" className="bg-[#13161C]">
+                      Auto — detected {resolved.detectedBass.label}
+                    </option>
+                    {Object.values(BASS_TUNINGS).map((t) => (
+                      <option key={t.id} value={t.id} className="bg-[#13161C]">
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </label>
+            )}
           </div>
 
-          {/* Notation Mode Switcher: Tabs / Chords / Sheet Music */}
-          <div
-            role="tablist"
-            aria-label="Notation display mode"
-            className="inline-flex items-center p-1 bg-[#13161C] border border-white/[0.08] rounded-md"
-          >
-            {(
-              [
-                { id: 'tabs', label: 'Tablature' },
-                { id: 'chords', label: 'Chords' },
-                { id: 'sheet', label: 'Sheet Music' },
-              ] as Array<{ id: NotationMode; label: string }>
-            ).map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={mode === tab.id}
-                onClick={() => setMode(tab.id)}
-                className={`px-3.5 py-1.5 text-xs font-medium rounded whitespace-nowrap shrink-0 cursor-pointer ${
-                  mode === tab.id
-                    ? 'bg-white/20 text-white font-semibold'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Tuning selector (Auto = detected from the notes) */}
-          {(mode === 'tabs' || mode === 'sheet') && (
-            <label className="flex items-center gap-1.5 text-xs text-slate-400">
-              <span>Tuning</span>
-              {instrument === 'guitar' ? (
-                <select
-                  aria-label="Guitar tuning"
-                  value={guitarTuning}
-                  onChange={(e) => onChangeGuitarTuning(e.target.value as GuitarTuningId | 'auto')}
-                  className="h-8 px-2.5 rounded bg-[#13161C] border border-white/[0.08] text-xs font-mono text-slate-200 cursor-pointer"
-                >
-                  <option value="auto" className="bg-[#13161C]">
-                    Auto — detected {resolved.detectedGuitar.label}
-                  </option>
-                  {Object.values(GUITAR_TUNINGS).map((t) => (
-                    <option key={t.id} value={t.id} className="bg-[#13161C]">
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <select
-                  aria-label="Bass tuning"
-                  value={bassTuning}
-                  onChange={(e) => onChangeBassTuning(e.target.value as BassTuningId | 'auto')}
-                  className="h-8 px-2.5 rounded bg-[#13161C] border border-white/[0.08] text-xs font-mono text-slate-200 cursor-pointer"
-                >
-                  <option value="auto" className="bg-[#13161C]">
-                    Auto — detected {resolved.detectedBass.label}
-                  </option>
-                  {Object.values(BASS_TUNINGS).map((t) => (
-                    <option key={t.id} value={t.id} className="bg-[#13161C]">
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </label>
-          )}
-        </div>
-
-        {/* Mode-specific Export Actions */}
-        <div className="flex flex-wrap items-center gap-2">
-          {(mode === 'tabs' || mode === 'sheet') && (
-            <>
-              <button
-                type="button"
-                onClick={() => handleDownloadMusicXml('instrument')}
-                title="Open in MuseScore, Guitar Pro, Sibelius, etc. (standard notation + TAB staff)"
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <FileMusic className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{partName} MusicXML</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDownloadMusicXml('score')}
-                title="Vocals, Guitar + TAB, Bass + TAB and Keyboards in one MusicXML score"
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <FileMusic className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Full Score MusicXML</span>
-              </button>
-              {onOpenExport && (
+          {/* Mode-specific Export Actions */}
+          <div className="flex flex-wrap items-center gap-2">
+            {(mode === 'tabs' || mode === 'sheet') && (
+              <>
                 <button
                   type="button"
-                  onClick={onOpenExport}
+                  onClick={() => handleDownloadMusicXml('instrument')}
+                  title="Open in MuseScore, Guitar Pro, Sibelius, etc. (standard notation + TAB staff)"
                   className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
-                  More export options…
+                  <FileMusic className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>{partName} MusicXML</span>
                 </button>
-              )}
-            </>
-          )}
-          {mode === 'tabs' && (
-            <>
-              <button
-                type="button"
-                onClick={handleCopyAsciiTab}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                {copiedTab ? (
-                  <>
-                    <Check className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
-                    <span>Copied ASCII Tab</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Copy ASCII Tab</span>
-                  </>
+                <button
+                  type="button"
+                  onClick={() => handleDownloadMusicXml('score')}
+                  title="Vocals, Guitar + TAB, Bass + TAB and Keyboards in one MusicXML score"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <FileMusic className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Full Score MusicXML</span>
+                </button>
+                {onOpenExport && (
+                  <button
+                    type="button"
+                    onClick={onOpenExport}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    More export options…
+                  </button>
                 )}
-              </button>
-              <button
-                type="button"
-                onClick={handleDownloadTab}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#0B0D10] bg-amber-500 hover:bg-amber-400 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Export .txt Tab</span>
-              </button>
-            </>
-          )}
+              </>
+            )}
+            {mode === 'tabs' && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleCopyAsciiTab}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  {copiedTab ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
+                      <span>Copied ASCII Tab</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Copy ASCII Tab</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadTab}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#0B0D10] bg-amber-500 hover:bg-amber-400 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Export .txt Tab</span>
+                </button>
+              </>
+            )}
 
-          {mode === 'sheet' && (
-            <>
-              <button
-                type="button"
-                onClick={() => void printScore(sheetXml, `${project.title} — ${partName}`)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#0B0D10] bg-amber-500 hover:bg-amber-400 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Printer className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Print / Save PDF</span>
-              </button>
-              <button
-                type="button"
-                onClick={handleDownloadSheetSvg}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>.svg</span>
-              </button>
-            </>
-          )}
+            {mode === 'sheet' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void printScore(sheetXml, `${project.title} — ${partName}`)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#0B0D10] bg-amber-500 hover:bg-amber-400 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Print / Save PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadSheetSvg}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>.svg</span>
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </div>
 

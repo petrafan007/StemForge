@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import type { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
 import { scrollWindowTo } from '../utils/scroll';
+import { stickyTopPx } from '../utils/stickyHeight';
 
 /**
  * Engraved sheet music (standard notation + optional TAB staff) rendered from the same MusicXML
@@ -157,8 +158,9 @@ export function ScoreView({ xml, zoom, beatsPerMeasure, barStarts, currentBeat, 
     if (Math.abs(active.y - lastFollowY.current) < 1) return;
     lastFollowY.current = active.y;
     const top = hostRef.current.getBoundingClientRect().top + window.scrollY + active.y;
-    if (top < window.scrollY + 120 || top + active.h > window.scrollY + window.innerHeight - 40) {
-      scrollWindowTo(top - window.innerHeight * 0.3);
+    const covered = stickyTopPx(); // sticky header, transport and part controls
+    if (top < window.scrollY + covered + 16 || top + active.h > window.scrollY + window.innerHeight - 40) {
+      scrollWindowTo(top - covered - Math.max(16, (window.innerHeight - covered) * 0.25));
     }
   }, [active?.y, follow]); // eslint-disable-line react-hooks/exhaustive-deps
 

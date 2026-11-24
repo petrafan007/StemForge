@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef } from 'react';
 import type { TuningPreset } from '../audio/notationEngine';
 import { midiToNoteName } from '../audio/notationEngine';
 import { scrollWindowTo } from '../utils/scroll';
+import { stickyTopPx } from '../utils/stickyHeight';
 import { beatX, locateBeat, type TabLayout, type TabLayoutNote, type TabLayoutRow } from '../audio/tabLayout';
 
 /**
@@ -212,10 +213,12 @@ function Playhead({ layout, currentBeat, palette, follow, containerRef }: { layo
     lastRow.current = loc.row.index;
     const host = containerRef.current;
     const top = host.getBoundingClientRect().top + window.scrollY + loc.row.top;
-    const viewTop = window.scrollY;
-    const viewBottom = viewTop + window.innerHeight;
-    if (top < viewTop + 120 || top + layout.rowHeight > viewBottom - 40) {
-      scrollWindowTo(top - window.innerHeight * 0.3);
+    // the part of the window not covered by the sticky bars (header, transport, part controls)
+    const covered = stickyTopPx();
+    const viewTop = window.scrollY + covered;
+    const viewBottom = window.scrollY + window.innerHeight;
+    if (top < viewTop + 16 || top + layout.rowHeight > viewBottom - 40) {
+      scrollWindowTo(top - covered - Math.max(16, (window.innerHeight - covered) * 0.25));
     }
   }, [loc?.row.index, follow]); // eslint-disable-line react-hooks/exhaustive-deps
 

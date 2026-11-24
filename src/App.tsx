@@ -44,6 +44,7 @@ import { detectKey } from './audio/musicAnalysis';
 import { resolveTunings } from './audio/scoreExport';
 import { applyTabEdits, parseTabEdits, type PartEdit, type TabEdits } from './audio/tabEdits';
 import { DEFAULT_BAR_SETTINGS, parseBarSettings, type BarSettings } from './audio/bars';
+import { useStickyHeightVar } from './utils/stickyHeight';
 import { quantizeDrumHits, quantizeMidiNotes } from './audio/midiEncoder';
 import { loadLocalSettings, mergeSettings, processingPayload, saveLocalSettings, type AppSettings, type ChordTranscriberId, type SeparatorId } from './settings/appSettings';
 import { SFG_TYPES, openFile, saveFileAs, writeToHandle, type FileHandleLike } from './utils/fileSystem';
@@ -135,6 +136,13 @@ export default function App() {
   const [notationPart, setNotationPart] = useState<NotationPart>('guitar');
   const [tabEdits, setTabEdits] = useState<TabEdits>({});
   const [barSettings, setBarSettings] = useState<BarSettings>(DEFAULT_BAR_SETTINGS);
+  // Tabs & Sheet: the header, the transport and the part / mode controls stay at the top while scrolling
+  const headerRef = useRef<HTMLElement | null>(null);
+  const transportWrapRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    headerRef.current = document.querySelector('header');
+  }, []);
+  useStickyHeightVar(headerRef, '--sf-header-h');
   const [quantize, setQuantize] = useState<QuantizeGrid>(settings.midi.quantize);
   const [minVelocity, setMinVelocity] = useState(settings.midi.minVelocity);
   const [midiPreviewMode, setMidiPreviewMode] = useState<'off' | 'keyboards' | 'drums' | 'combined'>('off');
@@ -821,6 +829,8 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleTogglePlay, handleSaveSfg, handleOpenSfg, project, exportState]);
 
+  useStickyHeightVar(transportWrapRef, '--sf-transport-h', activeView === 'notation' && Boolean(project));
+
   // ---------------------------------------------------------------- render
   const songEditing =
     project && baseProjectRef.current && resolvedTunings
@@ -915,36 +925,42 @@ export default function App() {
       )}
 
       {project && (
-        <TransportBar
-          project={songProject ?? project}
-          isPlaying={isPlaying}
-          currentTime={currentTime}
-          loopEnabled={loopEnabled}
-          metronomeEnabled={metronomeEnabled}
-          playbackRate={playbackRate}
-          transpose={transpose}
-          transposePending={transposePending}
-          pitchMode={project.serverProjectId ? 'buffers' : 'varispeed'}
-          onEditSong={() => setActiveView('settings')}
-          onTogglePlay={() => void handleTogglePlay()}
-          onStop={handleStop}
-          onSeek={handleSeek}
-          onToggleLoop={() => {
-            const next = !loopEnabled;
-            setLoopEnabled(next);
-            engineRef.current?.setLoop(next);
-          }}
-          onToggleMetronome={() => {
-            const next = !metronomeEnabled;
-            setMetronomeEnabled(next);
-            engineRef.current?.setMetronome(next);
-          }}
-          onChangeRate={(rate) => {
-            setPlaybackRate(rate);
-            engineRef.current?.setPlaybackRate(rate);
-          }}
-          onChangeTranspose={(semitones) => void applyTranspose(semitones)}
-        />
+        <div
+          ref={transportWrapRef}
+          className={activeView === 'notation' ? 'sticky z-20' : undefined}
+          style={activeView === 'notation' ? { top: 'var(--sf-header-h, 56px)' } : undefined}
+        >
+          <TransportBar
+            project={songProject ?? project}
+            isPlaying={isPlaying}
+            currentTime={currentTime}
+            loopEnabled={loopEnabled}
+            metronomeEnabled={metronomeEnabled}
+            playbackRate={playbackRate}
+            transpose={transpose}
+            transposePending={transposePending}
+            pitchMode={project.serverProjectId ? 'buffers' : 'varispeed'}
+            onEditSong={() => setActiveView('settings')}
+            onTogglePlay={() => void handleTogglePlay()}
+            onStop={handleStop}
+            onSeek={handleSeek}
+            onToggleLoop={() => {
+              const next = !loopEnabled;
+              setLoopEnabled(next);
+              engineRef.current?.setLoop(next);
+            }}
+            onToggleMetronome={() => {
+              const next = !metronomeEnabled;
+              setMetronomeEnabled(next);
+              engineRef.current?.setMetronome(next);
+            }}
+            onChangeRate={(rate) => {
+              setPlaybackRate(rate);
+              engineRef.current?.setPlaybackRate(rate);
+            }}
+            onChangeTranspose={(semitones) => void applyTranspose(semitones)}
+          />
+        </div>
       )}
 
       <main className="flex-1">
