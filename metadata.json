@@ -1,0 +1,6 @@
+{
+  "name": "StemForge",
+  "description": "Free browser-based audio stem separator, MIDI converter, and guitar/bass tab, chord, and sheet music studio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
