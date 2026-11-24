@@ -1,4 +1,4 @@
-import type { DrumHitEvent, MidiNoteEvent, SongProject, StemId, StemTrackData } from '../types/music';
+import type { DrumHitEvent, MidiNoteEvent, RawTranscription, SongProject, StemId, StemTrackData } from '../types/music';
 import { deriveMusic } from './musicAnalysis';
 import { fetchStem, getProject, type ProjectDocument, type ProjectState } from './serverApi';
 import { computeRms, computeWaveformPeaks } from './stemDsp';
@@ -42,9 +42,10 @@ export function buildProjectFromDocument(
       duration = Math.max(duration, buf.duration);
     }
   }
-  const raw = {
+  const raw: RawTranscription = {
     notes: doc.transcription?.notes ?? {},
     drums: doc.transcription?.drums ?? [],
+    ...(doc.transcription?.guitarParts ? { guitarParts: doc.transcription.guitarParts } : {}),
   };
   const simplify = state.simplifyPowerChords ?? defaults.simplifyPowerChords;
   const derived = deriveMusic(raw, grid, duration, { simplifyPowerChords: simplify, timeSignature });
@@ -69,6 +70,7 @@ export function buildProjectFromDocument(
     keyboardMidi: derived.keyboardMidi,
     drumHits: derived.drumHits,
     guitarNotes: derived.guitarNotes,
+    guitarParts: derived.guitarParts,
     leadNotes: derived.leadNotes,
     bassNotes: derived.bassNotes,
     vocalNotes: derived.vocalNotes,
@@ -119,6 +121,7 @@ export function applySongOverrides(project: SongProject, changes: SongOverrides,
       ...next,
       keyboardMidi: derived.keyboardMidi,
       guitarNotes: derived.guitarNotes,
+      guitarParts: derived.guitarParts,
       leadNotes: derived.leadNotes,
       bassNotes: derived.bassNotes,
       vocalNotes: derived.vocalNotes,
@@ -139,6 +142,7 @@ export function applySongOverrides(project: SongProject, changes: SongOverrides,
       ...next,
       keyboardMidi: notes(project.keyboardMidi),
       guitarNotes: notes(project.guitarNotes),
+      guitarParts: project.guitarParts && { left: notes(project.guitarParts.left), right: notes(project.guitarParts.right) },
       leadNotes: notes(project.leadNotes),
       bassNotes: notes(project.bassNotes),
       vocalNotes: notes(project.vocalNotes),

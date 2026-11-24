@@ -310,7 +310,7 @@ export default function App() {
         setOverrides(ov);
         setGuitarTuning((state.guitarTuning as GuitarTuningId | 'auto') ?? settingsRef.current.notation.guitarTuning);
         setBassTuning((state.bassTuning as BassTuningId | 'auto') ?? settingsRef.current.notation.bassTuning);
-        if (state.notationPart === 'guitar' || state.notationPart === 'lead' || state.notationPart === 'bass') setNotationPart(state.notationPart);
+        if (['guitar', 'guitar1', 'guitar2', 'lead', 'bass'].includes(state.notationPart ?? '')) setNotationPart(state.notationPart as NotationPart);
         if (state.quantize) setQuantize(state.quantize as QuantizeGrid);
         if (typeof state.minVelocity === 'number') setMinVelocity(state.minVelocity);
         const loop = state.loop ?? loopEnabled;

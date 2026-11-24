@@ -1,4 +1,4 @@
-import type { DrumTuple, MelodicStemId, NoteTuple, StemId } from '../types/music';
+import type { DrumTuple, GuitarSides, MelodicStemId, NoteTuple, StemId } from '../types/music';
 import { DEFAULT_SERVER_URL } from '../settings/appSettings';
 
 /**
@@ -115,6 +115,8 @@ export interface ProjectDocument {
     stringStats?: Record<string, Record<string, number>>;
     drumEngine: 'adtof' | 'onsets' | null;
     notes: Partial<Record<MelodicStemId, NoteTuple[]>>;
+    /** Left / right guitars of the guitar stem on their own, when they play different parts. */
+    guitarParts?: GuitarSides<NoteTuple>;
     drums: DrumTuple[];
     silentStems?: string[];
     stemLevelsDb?: Record<string, number>;

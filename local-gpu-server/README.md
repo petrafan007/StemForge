@@ -13,6 +13,7 @@ The Python backend for StemForge. It runs on http://127.0.0.1:8000 (this compute
      - pitch from the YIN periodicity of the waveform, which is robust to distortion: single note vs. power chord (± octave) vs. not periodic;
      - pitch changes followed inside held notes (legato, slides);
      - left and right guitars transcribed separately, then merged;
+     - when the two guitars play different parts somewhere (stretches where most of their attacks differ in pitch, not just scattered misreadings), each one is also kept as its own part (`transcription.guitarParts`: left / right). Where they play the same riff, both parts get the merged notes; elsewhere each part keeps its own notes, with Basic Pitch run on its own channel for full chords;
      - bleed from the bass, vocal and drum stems rejected;
      - the tuning's lowest string estimated in a first pass.
      Basic Pitch is used only where the audio isn't periodic (full chords).
@@ -30,11 +31,12 @@ Everything installs into `local-gpu-server/.venv`. Model weights (Demucs, BS-RoF
 
 ### Benchmarks
 
-`benchmarks/` renders synthetic metal songs with an exact answer key: Karplus-Strong guitars through an amp simulation, drop and standard tunings, chugs, gallops, tremolo, runs and power chords. It then scores the transcribers with mir_eval:
+`benchmarks/` renders synthetic metal songs with an exact answer key: Karplus-Strong guitars through an amp simulation, drop and standard tunings, chugs, gallops, tremolo, runs and power chords. Songs 1 and 2 double-track the rhythm guitars in unison. In song 3 the right guitar doubles runs a fifth up, harmonises a melody in thirds and plays its own melody over a chug riff, and each guitar has its own answer key. The transcribers are scored with mir_eval:
 
 ```powershell
 .\.venv\Scripts\python.exe benchmarks\synth_metal.py benchmarks\data
 .\.venv\Scripts\python.exe benchmarks\evaluate.py benchmarks\data --sep oraclebleed --methods current,riff --parts rhythm,bass,lead
+.\.venv\Scripts\python.exe benchmarks\evaluate.py benchmarks\data --sep oraclebleed --methods riff --parts rhythm,left,right
 ```
 
 Results (F-measure: 50 ms onset tolerance, 50 cents pitch tolerance):
@@ -46,6 +48,17 @@ Results (F-measure: 50 ms onset tolerance, 50 cents pitch tolerance):
 | Lead guitar | F 0.05–0.06 (bleed became notes) | F 0.89–0.91 |
 
 Both columns use the same stems: the true parts with simulated bleed from the other instruments (`--sep oraclebleed`).
+
+Separate guitar parts, measured the same way:
+
+- **Unison songs (1, 2):** no separate parts are made, which is correct.
+- **Twin-guitar song (3):** separate parts are made. Each guitar is scored against its own take:
+  - left guitar: F 0.90 (0.87 without the shared notes in unison sections);
+  - right guitar: F 0.93;
+  - combined rhythm guitar: F 0.93 against both takes together.
+  - In the harmony sections each part keeps 92–97% of its notes.
+
+The unit tests for this logic run with `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
 
 ## Setup
 

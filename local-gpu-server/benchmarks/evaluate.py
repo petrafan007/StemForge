@@ -1,7 +1,11 @@
 """
 Scores guitar / bass transcription against the synthetic answer key.
 
-  python evaluate.py <data_dir> [--sep htdemucs|roformer] [--methods current,...]
+  python evaluate.py <data_dir> [--sep htdemucs|roformer|oracle|oraclebleed] [--methods current,riff]
+                     [--parts rhythm,left,right,lead,bass,full]
+
+Parts: rhythm = both rhythm guitars, left / right = each rhythm guitar on its own (scored against the
+left / right take; a method without separate parts is scored with its merged rhythm part).
 
 Separation runs once per song/separator and is cached as FLAC stems next to the mix.
 """
@@ -123,7 +127,7 @@ def bp_opts():
 def current(stems: Path, part: str):
     """Today's pipeline: Basic Pitch + gating, then client-side power-chord simplification."""
     opts = bp_opts()
-    stem = {"rhythm": "guitar", "lead": "lead", "bass": "bass", "full": "guitar_full"}[part]
+    stem = {"rhythm": "guitar", "left": "guitar", "right": "guitar", "lead": "lead", "bass": "bass", "full": "guitar_full"}[part]
     notes = pipeline.transcribe_melodic(stems / f"{stem}.flac", "bass" if part == "bass" else ("lead" if part == "lead" else "guitar"), opts)
     audio, sr = pipeline.read_stem(stems / f"{stem}.flac")
     env = pipeline.envelope_db(audio.mean(0), sr)
@@ -139,21 +143,30 @@ def load_channels(path, sr=22050):
     return [librosa.resample(y[:, c], orig_sr=file_sr, target_sr=sr) for c in range(min(2, y.shape[1]))]
 
 
+_riff_cache: dict = {}
+
+
 @method("riff")
 def riff_method(stems: Path, part: str):
-    """New periodicity-based transcriber."""
+    """New periodicity-based transcriber (left / right: its separate parts when it makes them)."""
     from stemforge_server import riff
-    stem = {"rhythm": "guitar", "lead": "lead", "bass": "bass", "full": "guitar_full"}[part]
-    chans = load_channels(stems / f"{stem}.flac")
-    others = {"bass": ["guitar"], "lead": ["guitar", "bass"]}.get(part, ["bass"])
-    refs = [np.mean(load_channels(stems / f"{o}.flac"), axis=0) for o in others if (stems / f"{o}.flac").exists()]
-    vox = stems.parent / "stems_true" / "vocals.flac"  # stand-in for the separated vocal stem
-    if part in ("lead", "rhythm", "full") and vox.exists():
-        refs.append(np.mean(load_channels(vox), axis=0))
-    refs = refs or None
-    kind = {"rhythm": "guitar", "full": "guitar", "lead": "lead", "bass": "bass"}[part]
-    notes, st = riff.transcribe_stem(kind, chans, bleed_refs=refs)
-    print("     stats", {k: int(v) for k, v in st.items()})
+    stem = {"rhythm": "guitar", "left": "guitar", "right": "guitar", "lead": "lead", "bass": "bass", "full": "guitar_full"}[part]
+    key = (str(stems), stem)
+    if key not in _riff_cache:
+        chans = load_channels(stems / f"{stem}.flac")
+        others = {"bass": ["guitar"], "lead": ["guitar", "bass"]}.get(part, ["bass"])
+        refs = [np.mean(load_channels(stems / f"{o}.flac"), axis=0) for o in others if (stems / f"{o}.flac").exists()]
+        vox = stems.parent / "stems_true" / "vocals.flac"  # stand-in for the separated vocal stem
+        if part in ("lead", "rhythm", "left", "right", "full") and vox.exists():
+            refs.append(np.mean(load_channels(vox), axis=0))
+        refs = refs or None
+        kind = {"guitar": "guitar", "guitar_full": "guitar", "lead": "lead", "bass": "bass"}[stem]
+        _riff_cache[key] = riff.transcribe_stem(kind, chans, bleed_refs=refs)
+        notes, st, sides = _riff_cache[key]
+        print("     stats", {k: int(v) for k, v in st.items()}, "| separate left/right parts:", "yes" if sides else "no")
+    notes, st, sides = _riff_cache[key]
+    if part in ("left", "right"):
+        return sides[part] if sides else notes
     return notes
 
 
@@ -189,6 +202,8 @@ def run(data_dir: Path, sep: str, methods: list, parts: list):
         stems = separate_song(song, sep)
         refs = {
             "rhythm": [[n[0], n[1], n[2]] for n in truth["rhythm"]],
+            "left": [[n[0], n[1], n[2]] for n in truth.get("rhythm_left", truth["rhythm"])],
+            "right": [[n[0], n[1], n[2]] for n in truth.get("rhythm_right", truth["rhythm"])],
             "lead": truth["lead"],
             "bass": truth["bass"],
             "full": sorted([[n[0], n[1], n[2]] for n in truth["rhythm"]] + truth["lead"]),

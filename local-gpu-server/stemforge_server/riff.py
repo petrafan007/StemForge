@@ -13,12 +13,14 @@ intermodulation. So every pick attack is segmented, and each segment's waveform 
                             genuinely complex chord -> Basic Pitch's notes for that segment are used
 
 Hard-panned double-tracked guitars are analysed per channel (each channel is one clean guitar).
+When the two guitars play different parts (harmonies, a riff doubled a fifth up, counter-riffs),
+each side is also kept as its own part.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass, replace
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -454,32 +456,50 @@ def _merge_pair(e: NoteEvent, f: NoteEvent, stats: Dict[str, float]) -> NoteEven
     return NoteEvent(min(e.start, f.start), max(e.end, f.end), pitches, max(e.vel, f.vel), max(e.clarity, f.clarity), min(e.rise, f.rise))
 
 
-def merge_performances(a: Sequence[NoteEvent], b: Sequence[NoteEvent], window: float = 0.05, stats: Optional[Dict[str, float]] = None) -> List[NoteEvent]:
-    """
-    Joins two separately transcribed performances (e.g. hard-panned double-tracked guitars, which
-    never hit at exactly the same time - 30+ ms apart is normal) into one part: attacks within
-    `window` of each other are one event (earliest attack, union of the notes both guitars play).
-    """
-    st = stats if stats is not None else {}
-    ev = sorted([(e, 0) for e in a] + [(e, 1) for e in b], key=lambda x: x[0].start)
+Attack = Tuple[int, int]  # (side 0/1, index into that side's events)
+
+
+def _pair_attacks(a: Sequence[NoteEvent], b: Sequence[NoteEvent], window: float) -> List[Tuple[Attack, Optional[Attack]]]:
+    """Greedy, time-ordered pairing of two performances: each attack is joined with the first unused
+    attack of the other side within `window`. Returns (attack, partner or None) in attack order."""
+    ev = sorted([(e.start, 0, i) for i, e in enumerate(a)] + [(e.start, 1, i) for i, e in enumerate(b)], key=lambda x: x[0])
     used = [False] * len(ev)
-    out: List[NoteEvent] = []
-    for i, (e, ch) in enumerate(ev):
+    out: List[Tuple[Attack, Optional[Attack]]] = []
+    for i, (t, side, idx) in enumerate(ev):
         if used[i]:
             continue
         used[i] = True
         partner = None
         for k in range(i + 1, len(ev)):
-            if ev[k][0].start - e.start > window:
+            if ev[k][0] - t > window:
                 break
-            if not used[k] and ev[k][1] != ch:
+            if not used[k] and ev[k][1] != side:
                 partner = k
                 break
         if partner is None:
-            out.append(e)
+            out.append(((side, idx), None))
+        else:
+            used[partner] = True
+            out.append(((side, idx), (ev[partner][1], ev[partner][2])))
+    return out
+
+
+def merge_performances(a: Sequence[NoteEvent], b: Sequence[NoteEvent], window: float = 0.05, stats: Optional[Dict[str, float]] = None) -> List[NoteEvent]:
+    """
+    Joins two separately transcribed performances (e.g. hard-panned double-tracked guitars, which
+    never hit at exactly the same time - 30+ ms apart is normal) into one part: attacks within
+    `window` of each other are one event (earliest attack, union of the notes both guitars play).
+    The input events are not modified.
+    """
+    st = stats if stats is not None else {}
+    seqs = (a, b)
+    out: List[NoteEvent] = []
+    for (side, idx), partner in _pair_attacks(a, b, window):
+        e = seqs[side][idx]
+        if partner is None:
+            out.append(replace(e))
             continue
-        used[partner] = True
-        out.append(_merge_pair(e, ev[partner][0], st))
+        out.append(_merge_pair(e, seqs[partner[0]][partner[1]], st))
         st["paired"] = st.get("paired", 0.0) + 1
     # a held note of one guitar must not overlap the next attack of the merged part
     out.sort(key=lambda x: x.start)
@@ -487,6 +507,138 @@ def merge_performances(a: Sequence[NoteEvent], b: Sequence[NoteEvent], window: f
         if out[i].end > out[i + 1].start:
             out[i].end = max(out[i].start + 0.03, out[i + 1].start)
     return out
+
+
+def same_part(pe: Sequence[int], pf: Sequence[int]) -> bool:
+    """Two guitars play the same thing at an attack: same lowest note, and one's pitch classes contain
+    the other's (a power chord with or without the octave, or the root under a power chord, count as
+    the same; a harmony, a riff doubled a fifth up or a different note do not)."""
+    if not pe or not pf or min(pe) != min(pf):
+        return False
+    ce, cf = {p % 12 for p in pe}, {p % 12 for p in pf}
+    return ce <= cf or cf <= ce
+
+
+# A stretch where the two guitars play different parts: within SPLIT_WINDOW seconds (hop half of
+# it) at least SPLIT_MIN_PAIRS confidently pitched attack pairs, most of which differ. Isolated
+# disagreements are transcription errors of one side; double-tracked unison parts don't form such
+# stretches.
+SPLIT_WINDOW = 8.0
+SPLIT_MIN_PAIRS = 8
+SPLIT_MIN_NOTES = 24  # differing attack pairs inside such stretches needed to keep separate parts
+# (synthetic unison double-tracks through Demucs / RoFormer separation: at most 8)
+
+
+def side_agreement(a: Sequence[NoteEvent], b: Sequence[NoteEvent], window: float = 0.05) -> Dict[str, float]:
+    """How the left and right performances relate: confidently pitched attack pairs (both sides
+    periodic), how many of them differ, and how many differing pairs lie in stretches where the
+    guitars play different parts (harmonies, counter-riffs)."""
+    seqs = (a, b)
+    times: List[float] = []
+    differ: List[bool] = []
+    for (s1, i1), partner in _pair_attacks(a, b, window):
+        if partner is None:
+            continue
+        e, f = seqs[s1][i1], seqs[partner[0]][partner[1]]
+        if e.clarity > 0.5 and f.clarity > 0.5:
+            times.append(min(e.start, f.start))
+            differ.append(not same_part(e.pitches, f.pitches))
+    t, d = np.array(times), np.array(differ, dtype=bool)
+    stretch = np.zeros(len(t), dtype=bool)
+    if len(t):
+        for w0 in np.arange(0.0, float(t.max()) + 1e-9, SPLIT_WINDOW / 2):
+            m = (t >= w0) & (t < w0 + SPLIT_WINDOW)
+            if int(m.sum()) >= SPLIT_MIN_PAIRS and float(d[m].mean()) >= 0.5:
+                stretch |= m
+    return {"sidePairs": float(len(t)), "sideDiffer": float(d.sum()), "sideDifferInStretches": float((stretch & d).sum())}
+
+
+def sides_differ(agreement: Dict[str, float]) -> bool:
+    """True when the two guitars play different parts somewhere (worth separate tabs)."""
+    return agreement.get("sideDifferInStretches", 0.0) >= SPLIT_MIN_NOTES
+
+
+REGION = 2.5  # s: half-width of the window that decides whether the guitars play the same part
+REGION_MIN_PAIRS = 4
+
+
+def _part_regions(times: np.ndarray, paired: np.ndarray, confident: np.ndarray, differ: np.ndarray) -> List[str]:
+    """For each attack group: "differ" where the guitars play different parts, "unison" where they
+    play the same part, "own" where they don't attack together (one guitar alone) or the evidence is
+    too thin to tell."""
+    out = []
+    for t in times:
+        m = np.abs(times - t) <= REGION
+        n_conf = int(np.sum(m & confident))
+        if n_conf >= REGION_MIN_PAIRS and np.sum(m & confident & differ) >= 0.5 * n_conf:
+            out.append("differ")
+        elif np.sum(m & paired) < 0.5 * np.sum(m) or n_conf < REGION_MIN_PAIRS:
+            out.append("own")
+        else:
+            out.append("unison")
+    return out
+
+
+def side_parts(a: Sequence[NoteEvent], b: Sequence[NoteEvent], window: float = 0.05, stats: Optional[Dict[str, float]] = None) -> Tuple[List[NoteEvent], List[NoteEvent]]:
+    """
+    The two performances as separate parts (copies of the events).
+
+    Where the guitars play the same part (unison double-tracking), both parts get the merged notes:
+    two takes of the same riff are better heard together (an attack or an octave one side misses,
+    the other side catches). Where they play different parts (harmonies, a riff doubled a fifth up,
+    counter-riffs), or only one guitar plays, each part keeps its own notes. There, a single note an
+    octave away from the other side's that is the less periodic of the two is an octave error and
+    takes the other side's note - the same correction the merged part makes.
+    """
+    st = stats if stats is not None else {}
+    seqs = (a, b)
+    groups = _pair_attacks(a, b, window)
+    times = np.array([seqs[s][i].start for (s, i), _ in groups])
+    paired = np.array([p is not None for _, p in groups], dtype=bool)
+    confident = np.zeros(len(groups), dtype=bool)
+    differ = np.zeros(len(groups), dtype=bool)
+    for k, ((s, i), p) in enumerate(groups):
+        if p is not None:
+            e, f = seqs[s][i], seqs[p[0]][p[1]]
+            confident[k] = e.clarity > 0.5 and f.clarity > 0.5
+            differ[k] = not same_part(e.pitches, f.pitches)
+    regions = _part_regions(times, paired, confident, differ) if len(groups) else []
+
+    parts: Tuple[List[NoteEvent], List[NoteEvent]] = ([], [])
+    for ((s, i), p), region in zip(groups, regions):
+        e = seqs[s][i]
+        f = seqs[p[0]][p[1]] if p is not None else None
+        if region == "unison":
+            merged = _merge_pair(e, f, {}) if f is not None else replace(e)
+            parts[0].append(merged)
+            parts[1].append(replace(merged))
+            st["sideUnison"] = st.get("sideUnison", 0.0) + 1
+            continue
+        e = replace(e)
+        if f is not None:
+            f = replace(f)
+            if (
+                len(e.pitches) == 1
+                and len(f.pitches) == 1
+                and abs(e.pitches[0] - f.pitches[0]) == 12
+                and e.clarity > 0.0
+                and f.clarity > 0.0
+                and min(e.clarity, f.clarity) < 0.85
+            ):
+                if e.clarity >= f.clarity:
+                    f.pitches = e.pitches
+                else:
+                    e.pitches = f.pitches
+                st["sideOctaveFixed"] = st.get("sideOctaveFixed", 0.0) + 1
+            parts[p[0]].append(f)
+        parts[s].append(e)
+    for part in parts:
+        # a merged (unison) note must not overlap the part's next attack
+        part.sort(key=lambda x: x.start)
+        for k in range(len(part) - 1):
+            if part[k].end > part[k + 1].start:
+                part[k].end = max(part[k].start + 0.03, part[k + 1].start)
+    return parts[0], parts[1]
 
 
 # Pitch ranges (MIDI) and analysis settings per stem. Guitar reaches down to A1 for drop-A /
@@ -498,6 +650,9 @@ STEM_SETTINGS: Dict[str, Dict[str, float]] = {
 }
 
 
+SideParts = Dict[str, List[List[float]]]
+
+
 def transcribe_stem(
     stem: str,
     channels: Sequence[np.ndarray],
@@ -505,14 +660,22 @@ def transcribe_stem(
     sensitivity: float = 0.5,
     fallback_notes: Optional[List[List[float]]] = None,
     bleed_refs: Optional[Sequence[np.ndarray]] = None,
-) -> Tuple[List[List[float]], Dict[str, float]]:
-    """Guitar / lead / bass stem (channels at 22.05 kHz) -> notes [[start, end, midi, velocity]].
-    A stereo guitar stem with different left / right content (double-tracked or harmony guitars) is
-    transcribed per side and the two performances are merged."""
+    side_fallback: Optional[Callable[[], Optional[Sequence[List[List[float]]]]]] = None,
+) -> Tuple[List[List[float]], Dict[str, float], Optional[SideParts]]:
+    """
+    Guitar / lead / bass stem (channels at 22.05 kHz) -> (notes [[start, end, midi, velocity]], stats,
+    side parts). A stereo guitar stem with different left / right content (double-tracked or harmony
+    guitars) is transcribed per side and the two performances are merged into `notes`.
+
+    Side parts ({"left": notes, "right": notes}) are returned only when the two guitars play different
+    parts somewhere (see side_agreement); otherwise None. side_fallback, if given, returns spectral
+    (Basic Pitch) notes for the left and right channel separately: the side parts then use each side's
+    own notes where the audio is not periodic, instead of fallback_notes (heard on both sides at once).
+    """
     cfg = STEM_SETTINGS[stem]
     chans = [np.asarray(c, dtype=np.float64) for c in channels if len(c)]
     if not chans:
-        return [], {}
+        return [], {}, None
     kw = dict(
         allow_chords=bool(cfg["chords"]),
         sensitivity=sensitivity,
@@ -533,25 +696,42 @@ def transcribe_stem(
         # an attack heard on one guitar is looked for (with a lower threshold) on the other one too
         ons = [rescue_onsets(raw[0], raw[1], envs[0]), rescue_onsets(raw[1], raw[0], envs[1])]
 
-    def run(lo_midi: float) -> Tuple[List[NoteEvent], Dict[str, float]]:
-        per = [transcribe_events([c], lo_midi, cfg["hi"], onsets=o, **kw) for c, o in zip(sides, ons)]
+    def per_side(lo_midi: float, fallbacks: Sequence[Optional[List[List[float]]]]) -> List[Tuple[List[NoteEvent], Dict[str, float]]]:
+        return [transcribe_events([c], lo_midi, cfg["hi"], onsets=o, **{**kw, "fallback_notes": fb}) for c, o, fb in zip(sides, ons, fallbacks)]
+
+    def run(lo_midi: float) -> Tuple[List[NoteEvent], Dict[str, float], List[List[NoteEvent]]]:
+        per = per_side(lo_midi, [fallback_notes] * len(sides))
         st: Dict[str, float] = {}
         for _, s_ in per:
             for k, v in s_.items():
                 st[k] = st.get(k, 0.0) + v
         evs = per[0][0] if len(per) == 1 else merge_performances(per[0][0], per[1][0], stats=st)
-        return evs, st
+        return evs, st, [p[0] for p in per]
 
-    events, stats = run(lo)
+    events, stats, side_events = run(lo)
+    used_lo = lo
     if cfg["chords"]:
         # The lowest string decides what a very low period means: below the tuning's lowest note it
         # can only be the common period of a power chord, never a single note. Re-run with the
         # tuning floor found in the first pass.
         floor = tuning_floor(events, lo)
         if floor > lo + 0.5:
-            events, stats = run(floor)
+            events, stats, side_events = run(floor)
+            used_lo = floor
         stats["floor"] = floor
-    return events_to_notes(events), stats
+
+    parts: Optional[SideParts] = None
+    if len(side_events) == 2:
+        agreement = side_agreement(side_events[0], side_events[1])
+        stats.update(agreement)
+        if sides_differ(agreement):
+            own = side_fallback() if side_fallback is not None else None
+            if own is not None and len(own) == 2:
+                side_events = [evs for evs, _ in per_side(used_lo, list(own))]
+            left, right = side_parts(side_events[0], side_events[1], stats=stats)
+            parts = {"left": events_to_notes(left), "right": events_to_notes(right)}
+            stats["sideSplit"] = 1.0
+    return events_to_notes(events), stats, parts
 
 
 # lowest open string of common guitar tunings (MIDI): E, Eb, D, C#, C, B, A, F# (8-string)

@@ -115,6 +115,38 @@ test('deriveMusic builds every part, chords and key from a server transcription'
   assert.equal(d.vocalNotes[0].startBeat, 1);
   assert.equal(d.drumHits.length, 1);
   assert.equal(d.leadNotes.length, 0);
+  assert.equal(d.guitarParts, undefined, 'no left / right parts unless the server sends them');
+});
+
+test('deriveMusic keeps the left / right guitar parts with the same clean-up, chords from the combined part', () => {
+  // left guitar plays E, the right guitar the B a fifth above; together they sound as E5
+  const raw = {
+    notes: {
+      guitar: [
+        [0.5, 1.0, 40, 100],
+        [0.5, 1.0, 47, 100],
+      ] as NoteTuple[],
+    },
+    guitarParts: {
+      left: [
+        [0.5, 1.0, 40, 100],
+        [0.5, 1.0, 64, 40], // distortion overtone (two octaves up): removed like on the combined part
+      ] as NoteTuple[],
+      right: [[0.52, 1.0, 47, 100]] as NoteTuple[],
+    },
+    drums: [] as Array<[number, number, number]>,
+  };
+  const grid = { bpm: 120, beatOffsetSec: 0.5 };
+  const d = deriveMusic(raw, grid, 4, { simplifyPowerChords: true, timeSignature: [4, 4] });
+  assert.ok(d.guitarParts);
+  assert.deepEqual(d.guitarParts.left.map((n) => n.midi), [40]);
+  assert.deepEqual(d.guitarParts.right.map((n) => n.midi), [47]);
+  assert.equal(d.guitarParts.left[0].id, 'gtr1-1');
+  assert.equal(d.guitarParts.right[0].id, 'gtr2-1');
+  assert.ok(Math.abs(d.guitarParts.right[0].startBeat - 0.04) < 1e-9);
+  assert.equal(d.chords[0]?.symbol, 'E5');
+  const raw2 = deriveMusic(raw, grid, 4, { simplifyPowerChords: false, timeSignature: [4, 4] });
+  assert.deepEqual(raw2.guitarParts?.left.map((n) => n.midi), [40, 64], 'clean-up off keeps every note');
 });
 
 test('settings merge keeps defaults for missing keys and applies genre presets', () => {

@@ -9,8 +9,17 @@ export type NotationMode = 'tabs' | 'chords' | 'sheet';
 
 export type StringInstrument = 'guitar' | 'bass';
 
-/** Which transcribed part the notation view shows. */
-export type NotationPart = 'guitar' | 'lead' | 'bass';
+/**
+ * Which transcribed part the notation view shows. 'guitar1' / 'guitar2' are the left and right rhythm
+ * guitars on their own (only when the two guitars play different parts somewhere in the song).
+ */
+export type NotationPart = 'guitar' | 'guitar1' | 'guitar2' | 'lead' | 'bass';
+
+/** Left / right rhythm guitar parts, when the two guitars play different parts. */
+export interface GuitarSides<T> {
+  left: T[];
+  right: T[];
+}
 
 export type GuitarTuningId =
   | 'standard'
@@ -166,6 +175,8 @@ export type DrumTuple = [number, number, number];
 export interface RawTranscription {
   notes: Partial<Record<MelodicStemId, NoteTuple[]>>;
   drums: DrumTuple[];
+  /** The left and right guitars of the guitar stem as separate parts (when they play different parts). */
+  guitarParts?: GuitarSides<NoteTuple>;
 }
 
 export interface SongProject {
@@ -187,6 +198,8 @@ export interface SongProject {
   keyboardMidi: MidiNoteEvent[];
   drumHits: DrumHitEvent[];
   guitarNotes: MidiNoteEvent[];
+  /** Left / right rhythm guitar on its own ('guitar1' / 'guitar2' parts); guitarNotes holds both together. */
+  guitarParts?: GuitarSides<MidiNoteEvent>;
   leadNotes: MidiNoteEvent[];
   bassNotes: MidiNoteEvent[];
   vocalNotes: MidiNoteEvent[];

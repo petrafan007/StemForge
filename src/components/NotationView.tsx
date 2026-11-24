@@ -20,7 +20,7 @@ import {
   midiToNoteName,
   type ChordVoicing,
 } from '../audio/notationEngine';
-import { buildMusicXml, partLabel, partNotes, resolveTunings, type TuningOptions } from '../audio/scoreExport';
+import { buildMusicXml, notationParts, partLabel, partNotes, resolveTunings, type TuningOptions } from '../audio/scoreExport';
 import { beatToTime, quarterBeatsPerMeasure, timeToBeat } from '../audio/timeline';
 import type { NotationPart } from '../types/music';
 import { slugifyFilename, triggerTextDownload } from '../utils/download';
@@ -235,7 +235,8 @@ export function NotationView({
   accidentals,
   onOpenExport,
 }: NotationViewProps) {
-  const part: NotationPart = requestedPart === 'lead' && !project.stems.lead ? 'guitar' : requestedPart;
+  const availableParts = notationParts(project);
+  const part: NotationPart = availableParts.includes(requestedPart) ? requestedPart : 'guitar';
   const instrument: StringInstrument = part === 'bass' ? 'bass' : 'guitar';
   const [mode, setMode] = useState<NotationMode>('tabs');
   const [copiedTab, setCopiedTab] = useState(false);
@@ -407,31 +408,38 @@ export function NotationView({
       {/* Top Workspace Control Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
-          {/* Part switcher: Guitar / Lead Guitar / Bass */}
+          {/* Part switcher: (Rhythm) Guitar / Guitar 1 – Left / Guitar 2 – Right / Lead Guitar / Bass */}
           <div
             role="group"
             aria-label="Part selector"
-            className="inline-flex items-center p-1 bg-[#13161C] border border-white/[0.08] rounded-md"
+            className="inline-flex flex-wrap items-center p-1 bg-[#13161C] border border-white/[0.08] rounded-md"
           >
-            {(['guitar', 'lead', 'bass'] as NotationPart[])
-              .filter((p) => p !== 'lead' || Boolean(project.stems.lead))
-              .map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  aria-pressed={part === p}
-                  onClick={() => onChangePart(p)}
-                  className={`px-3.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    part === p
-                      ? p === 'bass'
-                        ? 'bg-sky-400 text-[#0B0D10] font-semibold'
-                        : 'bg-amber-500 text-[#0B0D10] font-semibold'
-                      : 'text-slate-300 hover:text-white'
-                  }`}
-                >
-                  {partLabel(project, p)} ({(p === 'bass' ? resolved.bass : resolved.guitar).openMidi.length}-String)
-                </button>
-              ))}
+            {availableParts.map((p) => (
+              <button
+                key={p}
+                type="button"
+                aria-pressed={part === p}
+                onClick={() => onChangePart(p)}
+                title={
+                  p === 'guitar1' || p === 'guitar2'
+                    ? `The ${p === 'guitar1' ? 'left' : 'right'}-panned guitar on its own. Where both guitars play the same riff it matches the ${partLabel(project, 'guitar')} tab.`
+                    : undefined
+                }
+                className={`px-3.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  part === p
+                    ? p === 'bass'
+                      ? 'bg-sky-400 text-[#0B0D10] font-semibold'
+                      : 'bg-amber-500 text-[#0B0D10] font-semibold'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+              >
+                {p === 'guitar1'
+                  ? 'Guitar 1 – Left'
+                  : p === 'guitar2'
+                    ? 'Guitar 2 – Right'
+                    : `${partLabel(project, p)} (${(p === 'bass' ? resolved.bass : resolved.guitar).openMidi.length}-String)`}
+              </button>
+            ))}
           </div>
 
           {/* Notation Mode Switcher: Tabs / Chords / Sheet Music */}

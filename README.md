@@ -18,6 +18,7 @@ Free, local-first stem separator, MIDI studio, and guitar/bass tab and sheet mus
 - **In-sync playback:** the playhead and the highlighted tab notes follow what you hear. The audio device's output latency is measured and compensated, notes light up at their real attack, and **Settings → Playback Sync** adds a manual delay for Bluetooth headphones.
 - **Tabs and sheet music:**
   - Whole-part tab fingering: power-chord shapes, few position shifts in fast passages, and the same riff fingered the same way every time it repeats.
+  - **Guitar 1 – Left / Guitar 2 – Right:** when the two rhythm guitars play different parts (harmonies, a riff doubled a fifth up, counter-riffs), each one also gets its own tab, sheet music, MusicXML part, text tab and MIDI track. Where both guitars play the same riff, the two parts show the same notes as the combined Rhythm Guitar tab.
   - **Auto-detected tunings:** Standard, Drop D, Eb, D, Drop C#, Drop C, C# and C standard, Drop B, B standard, Drop A, 7- and 8-string, and 4- or 5-string bass.
   - Chord charts (including power chords) and on-screen sheet music.
 - **Mixer:** mute, solo, volume, pan, and presets. **Key change** uses true pitch shifting (Rubber Band), so the tempo stays the same. Speed control and a metronome on the beat grid are included.
@@ -68,7 +69,7 @@ Open **Settings → Genre & Transcription → Metal**, and turn on **Split lead 
 | `npm run dev` | Web app only on `http://localhost:3000` |
 | `npm run build` | Production build into `dist/` (served by the GPU engine in desktop mode) |
 | `npm run lint` | TypeScript typecheck |
-| `npm test` | Unit tests (DSP, STFT, MIDI, notation, MusicXML, music analysis, server API client) |
+| `npm test` | Unit tests (DSP, STFT, MIDI, notation, MusicXML, score export, music analysis, server API client) |
 
 ## Repository structure
 
@@ -84,6 +85,7 @@ Open **Settings → Genre & Transcription → Metal**, and turn on **Split lead 
 │   │   ├── export.py             # Mixdown + FFmpeg encoding (Audacity-style options)
 │   │   └── settings.py           # %LOCALAPPDATA%\StemForge\settings.json
 │   ├── benchmarks/               # synthetic metal songs with answer keys + scoring (mir_eval)
+│   ├── tests/                    # server unit tests (python -m unittest discover -s tests)
 │   ├── requirements.txt / setup_windows.ps1 / start_windows.ps1
 ├── src/
 │   ├── audio/                    # audio engine, project model, music analysis, MIDI/MusicXML, server API

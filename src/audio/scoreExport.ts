@@ -39,17 +39,51 @@ export function resolveTunings(project: SongProject, choice: TuningChoice, opts:
   return { guitar, lead: guitar, bass, detectedGuitar, detectedBass };
 }
 
+/** True when the left and right rhythm guitars have their own parts (they play different parts somewhere). */
+export function hasGuitarSides(project: SongProject): boolean {
+  const sides = project.guitarParts;
+  return Boolean(sides && (sides.left.length > 0 || sides.right.length > 0));
+}
+
+/** Tab / score parts of a project, in display order: guitar (both), guitar 1 / 2, lead, bass. */
+export function notationParts(project: SongProject): NotationPart[] {
+  return [
+    'guitar',
+    ...(hasGuitarSides(project) ? (['guitar1', 'guitar2'] as NotationPart[]) : []),
+    ...(project.stems.lead ? (['lead'] as NotationPart[]) : []),
+    'bass',
+  ];
+}
+
 export function partNotes(project: SongProject, part: NotationPart): MidiNoteEvent[] {
-  return part === 'guitar' ? project.guitarNotes : part === 'lead' ? project.leadNotes : project.bassNotes;
+  switch (part) {
+    case 'guitar':
+      return project.guitarNotes;
+    case 'guitar1':
+      return project.guitarParts?.left ?? [];
+    case 'guitar2':
+      return project.guitarParts?.right ?? [];
+    case 'lead':
+      return project.leadNotes;
+    case 'bass':
+      return project.bassNotes;
+  }
 }
 
 export function partLabel(project: SongProject, part: NotationPart): string {
   if (part === 'bass') return 'Bass';
   if (part === 'lead') return 'Lead Guitar';
-  return project.stems.lead ? 'Rhythm Guitar' : 'Guitar';
+  const guitar = project.stems.lead ? 'Rhythm Guitar' : 'Guitar';
+  if (part === 'guitar1') return `${guitar} 1 – Left`;
+  if (part === 'guitar2') return `${guitar} 2 – Right`;
+  return guitar;
 }
 
-export type ScorePartId = 'vocals' | 'guitar' | 'lead' | 'bass' | 'keyboards';
+export type ScorePartId = 'vocals' | 'keyboards' | NotationPart;
+
+const PART_ABBREVIATION: Record<NotationPart, string> = { guitar: 'Gtr.', guitar1: 'Gtr. 1', guitar2: 'Gtr. 2', lead: 'Ld. Gtr.', bass: 'Bass' };
+/** 0-based MIDI channels per part (keys 0, guitar 1, bass 2, vocals 3, lead 4, guitar 1 / 2: 5 / 6). */
+const PART_CHANNEL: Record<NotationPart, number> = { guitar: 1, guitar1: 5, guitar2: 6, lead: 4, bass: 2 };
 
 export interface ScoreExportOptions {
   parts: ScorePartId[];
@@ -84,12 +118,12 @@ export function buildMusicXml(project: SongProject, opts: ScoreExportOptions): s
       parts.push({
         id: pid(),
         name,
-        abbreviation: part === 'bass' ? 'Bass' : part === 'lead' ? 'Ld. Gtr.' : 'Gtr.',
+        abbreviation: PART_ABBREVIATION[part],
         clef: part === 'bass' ? 'bass' : 'guitar',
         octaveDown: true,
         ...(opts.includeTab ? { tab: { tuning, notes: tab } } : { notes: tab.map((n) => ({ id: n.id, midi: n.midi, startBeat: n.startBeat, durationBeats: n.durationBeats, velocity: n.velocity, channel: 0 })) }),
         midiProgram: part === 'bass' ? 33 : 30,
-        midiChannel: part === 'bass' ? 2 : part === 'lead' ? 4 : 1,
+        midiChannel: PART_CHANNEL[part],
       });
     }
   }

@@ -3,6 +3,7 @@ import type {
   DrumHitEvent,
   DrumTuple,
   DrumVoice,
+  GuitarSides,
   MelodicStemId,
   MidiNoteEvent,
   NoteTuple,
@@ -24,6 +25,8 @@ export interface DeriveOptions {
 export interface DerivedMusic {
   keyboardMidi: MidiNoteEvent[];
   guitarNotes: MidiNoteEvent[];
+  /** Left / right rhythm guitar on its own (only when the transcription has separate parts). */
+  guitarParts?: GuitarSides<MidiNoteEvent>;
   leadNotes: MidiNoteEvent[];
   bassNotes: MidiNoteEvent[];
   vocalNotes: MidiNoteEvent[];
@@ -225,6 +228,12 @@ export function deriveMusic(raw: RawTranscription, grid: BeatGrid, durationSec: 
   };
   const keyboardMidi = tuplesToMidiEvents(clean('keyboards'), grid, 'keys');
   const guitarNotes = tuplesToMidiEvents(clean('guitar'), grid, 'gtr');
+  // the left / right guitars get the same clean-up as the rhythm guitar part they make up together
+  const side = (tuples: NoteTuple[], prefix: string) =>
+    tuplesToMidiEvents(opts.simplifyPowerChords ? simplifyPowerChords(tuples) : tuples, grid, prefix);
+  const guitarParts = raw.guitarParts
+    ? { left: side(raw.guitarParts.left ?? [], 'gtr1'), right: side(raw.guitarParts.right ?? [], 'gtr2') }
+    : undefined;
   const leadNotes = tuplesToMidiEvents(clean('lead'), grid, 'lead');
   const bassNotes = tuplesToMidiEvents(clean('bass'), grid, 'bass');
   const vocalNotes = tuplesToMidiEvents(clean('vocals'), grid, 'vox');
@@ -232,5 +241,6 @@ export function deriveMusic(raw: RawTranscription, grid: BeatGrid, durationSec: 
   const beats = Math.ceil(timeToBeat(grid, durationSec));
   const chords = chordsFromNotes([guitarNotes, leadNotes, keyboardMidi], bassNotes, opts.timeSignature, beats);
   const key = detectKey([guitarNotes, leadNotes, keyboardMidi, bassNotes, vocalNotes]);
-  return { keyboardMidi, guitarNotes, leadNotes, bassNotes, vocalNotes, drumHits, chords, key };
+  // chords and key come from the combined parts only (the left / right parts are subsets of guitarNotes)
+  return { keyboardMidi, guitarNotes, guitarParts, leadNotes, bassNotes, vocalNotes, drumHits, chords, key };
 }

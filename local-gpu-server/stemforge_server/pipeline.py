@@ -622,6 +622,29 @@ def load_stem_22k(path: Path) -> List[np.ndarray]:
     return [librosa.resample(np.ascontiguousarray(audio[c]), orig_sr=sr, target_sr=riff.SR) for c in range(audio.shape[0])]
 
 
+SIDES = ("left", "right")
+
+
+def side_basic_pitch(stem_path: Path, stem: str, opts: ProcessOptions) -> Optional[List[List[List[float]]]]:
+    """Basic Pitch notes for the left and the right channel of a stereo stem separately, each gated by
+    its own channel's level (so one guitar's notes never land in the other guitar's part)."""
+    if basic_pitch_model() is None:
+        return None
+    import tempfile
+
+    audio, sr = read_stem(stem_path)
+    if audio.shape[0] < 2:
+        return None
+    out: List[List[List[float]]] = []
+    with tempfile.TemporaryDirectory(prefix="stemforge-sides-") as tmp:
+        for ch in range(2):
+            path = Path(tmp) / f"{stem}-{SIDES[ch]}.wav"
+            sf.write(str(path), audio[ch], sr, subtype="FLOAT")
+            notes = transcribe_melodic(path, stem, opts)
+            out.append(gate_notes(notes, envelope_db(audio[ch], sr), 0.05, opts.silence_gate_db))
+    return out
+
+
 def transcribe_strings(
     stems_dir: Path,
     stems: List[str],
@@ -630,12 +653,15 @@ def transcribe_strings(
     progress: Optional[Progress] = None,
     lo: float = 0,
     hi: float = 0,
-) -> Tuple[Dict[str, List[List[float]]], Dict[str, Dict[str, float]]]:
+) -> Tuple[Dict[str, List[List[float]]], Dict[str, Dict[str, float]], Dict[str, Dict[str, List[List[float]]]]]:
     """
     Periodicity-based riff transcription (stemforge_server.riff) for the guitar, lead and bass stems:
     one note per pick attack, pitch from the waveform's periodicity (robust to distortion), pitch
     changes followed inside held notes, Basic Pitch notes only where the audio is not periodic,
     and notes that are really leakage from another stem dropped.
+
+    Returns (notes per stem, stats per stem, side parts per stem). Side parts ({"left", "right"})
+    exist for a stereo guitar stem whose left and right guitars play different parts.
     """
     from . import riff
 
@@ -649,17 +675,27 @@ def transcribe_strings(
             audio[name] = load_stem_22k(f)
     out: Dict[str, List[List[float]]] = {}
     stats: Dict[str, Dict[str, float]] = {}
+    parts: Dict[str, Dict[str, List[List[float]]]] = {}
     for k, s in enumerate(stems):
         if s not in audio:
             continue
         refs = [np.mean(audio[r], axis=0) for r in BLEED_SOURCES.get(s, ()) if r in audio and r != s]
         sens = opts.sensitivity.get("bass" if s == "bass" else "guitar", 0.5)
-        notes, st = riff.transcribe_stem(s, audio[s], sensitivity=sens, fallback_notes=fallback.get(s), bleed_refs=refs)
+        notes, st, sides = riff.transcribe_stem(
+            s,
+            audio[s],
+            sensitivity=sens,
+            fallback_notes=fallback.get(s),
+            bleed_refs=refs,
+            side_fallback=lambda s=s: side_basic_pitch(stems_dir / f"{s}.flac", s, opts),
+        )
         out[s] = notes
         stats[s] = {key: round(v, 2) for key, v in st.items()}
+        if sides:
+            parts[s] = sides
         if progress is not None and hi > lo:
             progress.set_percent(lo + (hi - lo) * (k + 1) / len(stems))
-    return out, stats
+    return out, stats, parts
 
 
 # --------------------------------------------------------------------------- drum transcription
@@ -903,13 +939,21 @@ def run_job(
 
         # ---- guitar / lead / bass: riff transcriber (Basic Pitch only as the fallback for chords)
         string_stats: Dict[str, Dict[str, float]] = {}
+        guitar_parts: Optional[Dict[str, List[List[float]]]] = None
         strings = [s for s in to_run if s in STRING_STEMS]
         if strings:
             progress.set("Transcribing guitar and bass riffs", 82)
             try:
-                riffs, string_stats = transcribe_strings(stems_dir, strings, opts, notes, progress, 82, 88)
+                riffs, string_stats, string_parts = transcribe_strings(stems_dir, strings, opts, notes, progress, 82, 88)
                 for s, ns in riffs.items():
                     notes[s] = gate_notes(ns, envs[s], 0.05, opts.silence_gate_db)
+                if "guitar" in string_parts:
+                    # left / right guitars as their own parts, each gated by its own channel
+                    g_audio, g_sr = read_stem(stems_dir / "guitar.flac")
+                    guitar_parts = {
+                        side: gate_notes(string_parts["guitar"][side], envelope_db(g_audio[min(ch, g_audio.shape[0] - 1)], g_sr), 0.05, opts.silence_gate_db)
+                        for ch, side in enumerate(SIDES)
+                    }
             except JobCancelled:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -956,6 +1000,7 @@ def run_job(
         "stringStats": string_stats,
         "drumEngine": drum_engine,
         "notes": notes,
+        **({"guitarParts": guitar_parts} if guitar_parts else {}),
         "drums": drums,
         "silentStems": silent,
         "stemLevelsDb": stem_levels,

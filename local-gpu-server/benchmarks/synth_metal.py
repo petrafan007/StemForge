@@ -4,10 +4,13 @@ Synthetic metal benchmark: renders full-band metal songs with an exact answer ke
 Each song has double-tracked high-gain rhythm guitars (hard left / right), a bass that doubles the
 riff roots, drums, a centered lead guitar with stereo delay, and a reverb-heavy synthetic vocal
 (to test bleed). Riffs cover palm-muted chugs with power-chord accents, gallops, sustained power
-chords, single-note 16th runs, tremolo picking and a drop-C section.
+chords, single-note 16th runs, tremolo picking and a drop-C section. Songs 1 and 2 double-track the
+rhythm guitars in unison; in song 3 the right guitar doubles runs a fifth up, harmonises a melody in
+thirds and plays its own melody over a chug riff (twin-guitar parts).
 
-Usage:  python synth_metal.py <out_dir> [--songs 2]
-Writes <out_dir>/<song>/mix.flac and truth.json (notes per part: [start, end, midi, string, fret]).
+Usage:  python synth_metal.py <out_dir> [--songs 3] [--only 3]
+Writes <out_dir>/<song>/mix.flac and truth.json (notes per part: [start, end, midi, string, fret];
+"rhythm" = both rhythm guitars, "rhythm_left" / "rhythm_right" = each guitar on its own).
 """
 
 from __future__ import annotations
@@ -180,10 +183,53 @@ def power(root_string: int, fret: int, tuning, octave: bool = True):
     return notes
 
 
-def make_song(seed: int, bpm: float, sections: list, rng) -> dict:
+E_MINOR = [4, 6, 7, 9, 11, 0, 2]  # pitch classes of the key the harmonies are written in
+
+
+def third_above(midi: int) -> int:
+    """Interval (semitones) of the diatonic third above `midi` in E minor (minor third off the scale)."""
+    pc = midi % 12
+    if pc not in E_MINOR:
+        return 3
+    i = E_MINOR.index(pc)
+    return (E_MINOR[(i + 2) % 7] - pc) % 12
+
+
+def right_take(sec_events: list, mode, tuning, beat: float, t0: float, bars: int) -> list:
+    """What the right guitar plays in a section: the same riff (mode None), single notes doubled a
+    fifth up ("fifth") or harmonised in diatonic thirds ("third"), or its own tremolo-picked melody
+    over the left guitar's riff ("counter"). Chords stay in unison."""
+    if mode is None:
+        return list(sec_events)
+    if mode in ("fifth", "third"):
+        out = []
+        for t, d, notes, palm in sec_events:
+            if len(notes) == 1:
+                m2 = notes[0][2] + (7 if mode == "fifth" else third_above(notes[0][2]))
+                s2, f2 = fret_of(m2, tuning, prefer_low=False)
+                notes = [(s2, f2, m2)]
+            out.append((t, d, notes, palm))
+        return out
+    if mode == "counter":
+        out = []
+        s16 = beat / 4
+        for bar in range(bars):
+            bt = t0 + bar * 4 * beat
+            mel = [67, 69, 71, 72][bar % 4]
+            for i in range(16):
+                m = mel if i < 8 else mel - 2
+                s, f = fret_of(m, tuning, prefer_low=False)
+                out.append((bt + i * s16, s16 * 0.95, [(s, f, m)], False))
+        return out
+    raise ValueError(mode)
+
+
+def make_song(seed: int, bpm: float, sections: list, rng, spread: float = 0.006) -> dict:
+    """spread: timing scatter (s, standard deviation) of each guitar take against the grid."""
     beat = 60.0 / bpm
     s16 = beat / 4
-    events = []  # (time, dur, [(string, fret, midi)], palm, part)
+    events = []  # (time, dur, [(string, fret, midi)], palm) - the left guitar
+    right_events = []  # the right guitar (same as `events` except in harmony / counter sections)
     bass_events = []
     lead_events = []
     vocal_events = []
@@ -192,6 +238,7 @@ def make_song(seed: int, bpm: float, sections: list, rng) -> dict:
     for sec in sections:
         kind, bars, tuning = sec["kind"], sec["bars"], sec["tuning"]
         low = tuning[-1]
+        n0 = len(events)
         for bar in range(bars):
             bt = t0 + bar * 4 * beat
             if kind == "chug":
@@ -247,24 +294,28 @@ def make_song(seed: int, bpm: float, sections: list, rng) -> dict:
                 for b in range(4):
                     bass_events.append((bt + b * beat, beat * 0.95, tuning[5] + [0, 0, 3, 5][bar % 4] - 12 + 12))
                 drums += [(bt + i * s16, "kick") for i in range(16)] + [(bt + b * beat, "snare") for b in range(4)]
+        right_events += right_take(events[n0:], sec.get("right"), tuning, beat, t0, bars)
         t0 += bars * 4 * beat
     duration = t0 + 1.5
 
     n = int(duration * SR)
     gtr = np.zeros((2, n))
-    truth_rhythm = []
     for take in (0, 1):
         trk = np.zeros(n)
         r = np.random.default_rng(seed * 10 + take)
-        for t, d, notes, palm in events:
-            jitter = r.normal(0, 0.006)
+        for t, d, notes, palm in events if take == 0 else right_events:
+            jitter = r.normal(0, spread)
             for k, (s, f, midi) in enumerate(sorted(notes, key=lambda x: x[2])):
                 sig = pluck(midi + r.normal(0, 0.03), d, r, palm=palm, bright=0.45 if palm else 0.7)
                 place(trk, sig, t + jitter + k * 0.004, 0.55 if palm else 0.5)
         gtr[take] = amp_chain(trk, gain=70 if take == 0 else 55)
-    for t, d, notes, palm in events:
-        for s, f, midi in notes:
-            truth_rhythm.append([round(t, 4), round(t + d, 4), int(midi), int(s), int(f)])
+
+    def truth_of(evs):
+        return [[round(t, 4), round(t + d, 4), int(midi), int(s), int(f)] for t, d, notes, palm in evs for s, f, midi in notes]
+
+    truth_left, truth_right = truth_of(events), truth_of(right_events)
+    seen = {tuple(x[:3]) for x in truth_left}
+    truth_rhythm = truth_left + [x for x in truth_right if tuple(x[:3]) not in seen]  # both guitars together
 
     bass = np.zeros(n)
     for t, d, midi in bass_events:
@@ -311,6 +362,8 @@ def make_song(seed: int, bpm: float, sections: list, rng) -> dict:
         "bpm": bpm,
         "duration": duration,
         "rhythm": sorted(truth_rhythm),
+        "rhythm_left": sorted(truth_left),
+        "rhythm_right": sorted(truth_right),
         "bass": sorted([[round(t, 4), round(t + d, 4), int(m)] for t, d, m in bass_events]),
         "lead": sorted([[round(t, 4), round(t + d, 4), int(m)] for t, d, m in lead_events]),
         "vocals": sorted([[round(t, 4), round(t + d, 4), int(m)] for t, d, m in vocal_events]),
@@ -322,16 +375,21 @@ def make_song(seed: int, bpm: float, sections: list, rng) -> dict:
 SONGS = [
     {"bpm": 180, "sections": [("chug", 8, STANDARD), ("gallop", 8, STANDARD), ("power", 8, STANDARD), ("run", 8, STANDARD), ("tremolo", 4, STANDARD), ("chug", 8, DROP_C)]},
     {"bpm": 132, "sections": [("power", 8, DROP_C), ("chug", 8, DROP_C), ("run", 8, STANDARD), ("gallop", 8, STANDARD), ("tremolo", 4, STANDARD)]},
+    # twin guitars, looser double-tracking (takes scatter +/-12 ms instead of 6)
+    {"bpm": 150, "spread": 0.012, "sections": [("chug", 4, STANDARD), ("run", 8, STANDARD, "fifth"), ("power", 4, STANDARD), ("tremolo", 8, STANDARD, "third"), ("gallop", 4, STANDARD), ("chug", 8, STANDARD, "counter")]},
 ]
 
 
 def main():
     out = Path(sys.argv[1])
     count = int(sys.argv[sys.argv.index("--songs") + 1]) if "--songs" in sys.argv else len(SONGS)
+    only = {int(x) for x in sys.argv[sys.argv.index("--only") + 1].split(",")} if "--only" in sys.argv else None
     for i, spec in enumerate(SONGS[:count]):
+        if only is not None and i + 1 not in only:
+            continue
         rng = np.random.default_rng(100 + i)
-        sections = [{"kind": k, "bars": b, "tuning": tn} for k, b, tn in spec["sections"]]
-        song = make_song(i, spec["bpm"], sections, rng)
+        sections = [{"kind": s[0], "bars": s[1], "tuning": s[2], "right": s[3] if len(s) > 3 else None} for s in spec["sections"]]
+        song = make_song(i, spec["bpm"], sections, rng, spread=spec.get("spread", 0.006))
         d = out / f"song{i + 1}_{spec['bpm']}bpm"
         d.mkdir(parents=True, exist_ok=True)
         sf.write(d / "mix.flac", song["mix"].T, SR, subtype="PCM_24")

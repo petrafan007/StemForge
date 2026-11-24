@@ -7,7 +7,7 @@ import { tempoChangesFor } from '../audio/timeline';
 import { GM_PROGRAMS } from '../audio/gmPrograms';
 import { encodeWav, mixStems, preventClipping } from '../audio/clientExport';
 import { exportAudioOnServer } from '../audio/serverApi';
-import { buildAsciiTab, buildMusicXml, partLabel, type ResolvedTunings, type ScorePartId } from '../audio/scoreExport';
+import { buildAsciiTab, buildMusicXml, hasGuitarSides, notationParts, partLabel, partNotes, type ResolvedTunings, type ScorePartId } from '../audio/scoreExport';
 import { formatTimecode } from '../utils/download';
 import { pickDirectory, sanitizeFileName, saveFileAs, writeFileInDirectory, downloadBlob, type FilePickerType } from '../utils/fileSystem';
 import type { AppSettings } from '../settings/appSettings';
@@ -31,9 +31,11 @@ const FORMAT_INFO: Record<AudioFormat, { label: string; ext: string; mime: strin
 const SAMPLE_RATES = [8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000];
 const MP3_BITRATES = [64, 96, 128, 160, 192, 224, 256, 320];
 
-type MidiTrackId = 'keyboards' | 'guitar' | 'lead' | 'bass' | 'vocals' | 'drums';
-const MIDI_DEFAULT_PROGRAMS: Record<Exclude<MidiTrackId, 'drums'>, number> = { keyboards: 0, guitar: 30, lead: 29, bass: 33, vocals: 52 };
-const MIDI_CHANNELS: Record<Exclude<MidiTrackId, 'drums'>, number> = { keyboards: 0, guitar: 1, bass: 2, vocals: 3, lead: 4 };
+type MidiTrackId = 'keyboards' | 'guitar' | 'guitar1' | 'guitar2' | 'lead' | 'bass' | 'vocals' | 'drums';
+const MIDI_DEFAULT_PROGRAMS: Record<Exclude<MidiTrackId, 'drums'>, number> = { keyboards: 0, guitar: 30, guitar1: 30, guitar2: 30, lead: 29, bass: 33, vocals: 52 };
+const MIDI_CHANNELS: Record<Exclude<MidiTrackId, 'drums'>, number> = { keyboards: 0, guitar: 1, bass: 2, vocals: 3, lead: 4, guitar1: 5, guitar2: 6 };
+/** Left / right guitar tracks repeat notes of the combined guitar track, so they start unticked. */
+const OPTIONAL_TRACKS = new Set<string>(['guitar1', 'guitar2']);
 
 interface ExportDialogProps {
   project: SongProject;
@@ -404,13 +406,26 @@ function AudioExport({ project, mixer, transpose, playbackRate, serverUrl, setti
 
 function MidiExport({ project, transpose, settings, onRemember }: ExportDialogProps) {
   const remembered = settings.exportDefaults.midi as Partial<Record<string, unknown>>;
-  const ids: MidiTrackId[] = (['keyboards', 'guitar', 'lead', 'bass', 'vocals', 'drums'] as MidiTrackId[]).filter((id) => id !== 'lead' || Boolean(project.stems.lead));
+  const ids: MidiTrackId[] = (['keyboards', 'guitar', 'guitar1', 'guitar2', 'lead', 'bass', 'vocals', 'drums'] as MidiTrackId[]).filter(
+    (id) => (id !== 'lead' || Boolean(project.stems.lead)) && (!OPTIONAL_TRACKS.has(id) || hasGuitarSides(project))
+  );
   const notesOf = (id: MidiTrackId): MidiNoteEvent[] =>
-    id === 'keyboards' ? project.keyboardMidi : id === 'guitar' ? project.guitarNotes : id === 'lead' ? project.leadNotes : id === 'bass' ? project.bassNotes : id === 'vocals' ? project.vocalNotes : [];
+    id === 'keyboards' ? project.keyboardMidi : id === 'vocals' ? project.vocalNotes : id === 'drums' ? [] : partNotes(project, id);
   const count = (id: MidiTrackId) => (id === 'drums' ? project.drumHits.length : notesOf(id).length);
-  const label = (id: MidiTrackId) => (id === 'drums' ? 'Drums' : id === 'keyboards' ? 'Keyboards' : id === 'vocals' ? 'Vocal melody' : id === 'bass' ? 'Bass' : stemLabel(id, project));
+  const label = (id: MidiTrackId) =>
+    id === 'drums'
+      ? 'Drums'
+      : id === 'keyboards'
+        ? 'Keyboards'
+        : id === 'vocals'
+          ? 'Vocal melody'
+          : id === 'bass'
+            ? 'Bass'
+            : id === 'guitar1' || id === 'guitar2'
+              ? partLabel(project, id)
+              : stemLabel(id, project);
 
-  const [selected, setSelected] = useState<Record<string, boolean>>(() => Object.fromEntries(ids.map((id) => [id, count(id) > 0])));
+  const [selected, setSelected] = useState<Record<string, boolean>>(() => Object.fromEntries(ids.map((id) => [id, count(id) > 0 && !OPTIONAL_TRACKS.has(id)])));
   const [layout, setLayout] = useState<'type1' | 'type0' | 'separate'>((remembered.layout as 'type1') ?? 'type1');
   const [quantize, setQuantize] = useState<QuantizeGrid>((remembered.quantize as QuantizeGrid) ?? settings.midi.quantize);
   const [minVelocity, setMinVelocity] = useState<number>((remembered.minVelocity as number) ?? settings.midi.minVelocity);
@@ -560,16 +575,16 @@ function MidiExport({ project, transpose, settings, onRemember }: ExportDialogPr
 // ------------------------------------------------------------------------------------------ score
 
 function ScoreExport({ project, transpose, settings, tunings }: ExportDialogProps) {
-  const available: ScorePartId[] = (['vocals', 'guitar', 'lead', 'bass', 'keyboards'] as ScorePartId[]).filter((p) => p !== 'lead' || Boolean(project.stems.lead));
-  const count = (p: ScorePartId) =>
-    p === 'vocals' ? project.vocalNotes.length : p === 'keyboards' ? project.keyboardMidi.length : p === 'guitar' ? project.guitarNotes.length : p === 'lead' ? project.leadNotes.length : project.bassNotes.length;
-  const label = (p: ScorePartId) => (p === 'vocals' ? 'Vocal melody' : p === 'keyboards' ? 'Keyboards (grand staff)' : partLabel(project, p as NotationPart));
-  const [parts, setParts] = useState<Record<string, boolean>>(() => Object.fromEntries(available.map((p) => [p, count(p) > 0 && p !== 'vocals'])));
+  const available: ScorePartId[] = ['vocals', ...notationParts(project), 'keyboards'];
+  const count = (p: ScorePartId) => (p === 'vocals' ? project.vocalNotes.length : p === 'keyboards' ? project.keyboardMidi.length : partNotes(project, p).length);
+  const label = (p: ScorePartId) => (p === 'vocals' ? 'Vocal melody' : p === 'keyboards' ? 'Keyboards (grand staff)' : partLabel(project, p));
+  // the left / right guitars repeat notes of the combined guitar part, so they start unticked
+  const [parts, setParts] = useState<Record<string, boolean>>(() => Object.fromEntries(available.map((p) => [p, count(p) > 0 && p !== 'vocals' && !OPTIONAL_TRACKS.has(p)])));
   const [includeTab, setIncludeTab] = useState(true);
   const [applyTranspose, setApplyTranspose] = useState(transpose !== 0);
   const [result, setResult] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const t = applyTranspose ? transpose : 0;
-  const tabParts = useMemo(() => (['guitar', 'lead', 'bass'] as NotationPart[]).filter((p) => p !== 'lead' || Boolean(project.stems.lead)), [project]);
+  const tabParts = useMemo(() => notationParts(project), [project]);
 
   const saveText = async (text: string, name: string, desc: string, mime: string, ext: string) => {
     const saved = await saveFileAs(new Blob([text], { type: mime }), name, [{ description: desc, accept: { [mime]: [ext] } }], 'stemforge-score');
