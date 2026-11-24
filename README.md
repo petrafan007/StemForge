@@ -14,6 +14,8 @@ Free, local-first audio stem separator, MIDI studio, and guitar/bass tablature, 
 
 ## Quick Start (Local Installation)
 
+> For full step-by-step PC installation instructions (including `winget` commands, NVIDIA driver notes, manual virtualenv setup, and troubleshooting), see **[SETUP.md](./SETUP.md)**.
+
 ### Prerequisites
 - **Node.js 20+** (for the StemForge web app)
 - **Python 3.10 or 3.11** + **FFmpeg** + **NVIDIA CUDA drivers** (for the RTX GPU neural engine in `local-gpu-server/`)
