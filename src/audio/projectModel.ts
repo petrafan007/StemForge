@@ -1,4 +1,5 @@
 import type { DrumHitEvent, MidiNoteEvent, RawTranscription, SongProject, StemId, StemTrackData } from '../types/music';
+import { parseBarSettings } from './bars';
 import { deriveMusic } from './musicAnalysis';
 import { fetchStem, getProject, type ProjectDocument, type ProjectState } from './serverApi';
 import { computeRms, computeWaveformPeaks } from './stemDsp';
@@ -63,6 +64,8 @@ export function buildProjectFromDocument(
     bpm,
     beatOffsetSec,
     beatTimes: grid.beatTimes,
+    ...(doc.analysis?.downbeats?.length ? { downbeatTimes: doc.analysis.downbeats } : {}),
+    ...(state.barLines ? { barSettings: parseBarSettings(state.barLines) } : {}),
     timeSignature,
     keyRootPc: key.rootPc,
     keyMode: key.mode,

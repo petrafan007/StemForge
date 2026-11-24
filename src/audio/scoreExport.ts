@@ -1,6 +1,7 @@
 import type { BassTuningId, GuitarTuningId, MidiNoteEvent, NotationPart, SongProject } from '../types/music';
 import { encodeMusicXml, type MusicXmlPartInput } from './musicXml';
 import { BASS_TUNINGS, GUITAR_TUNINGS, detectTuning, generateAsciiTab, mapNotesToTab, type TuningPreset } from './notationEngine';
+import { barStartsFor } from './bars';
 import { quarterBeatsPerMeasure } from './timeline';
 
 export interface TuningChoice {
@@ -129,6 +130,7 @@ export function buildMusicXml(project: SongProject, opts: ScoreExportOptions): s
   }
   if (parts.length === 0) throw new Error('There are no transcribed notes in the selected parts.');
   return encodeMusicXml({
+    barStarts: barStartsFor(project),
     title: project.title,
     subtitle: 'Transcribed with StemForge',
     bpm: project.bpm,
@@ -148,6 +150,8 @@ export function buildAsciiTab(project: SongProject, part: NotationPart, tuning: 
     tuning,
     `${project.title} (${partLabel(project, part)})`,
     project.bpm,
-    Math.max(1, Math.round(quarterBeatsPerMeasure(project.timeSignature)))
+    quarterBeatsPerMeasure(project.timeSignature),
+    4,
+    barStartsFor(project)
   );
 }

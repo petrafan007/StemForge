@@ -43,6 +43,7 @@ import { applySongOverrides, buildProjectFromDocument, loadServerProject, type S
 import { detectKey } from './audio/musicAnalysis';
 import { resolveTunings } from './audio/scoreExport';
 import { applyTabEdits, parseTabEdits, type PartEdit, type TabEdits } from './audio/tabEdits';
+import { DEFAULT_BAR_SETTINGS, parseBarSettings, type BarSettings } from './audio/bars';
 import { quantizeDrumHits, quantizeMidiNotes } from './audio/midiEncoder';
 import { loadLocalSettings, mergeSettings, processingPayload, saveLocalSettings, type AppSettings, type ChordTranscriberId, type SeparatorId } from './settings/appSettings';
 import { SFG_TYPES, openFile, saveFileAs, writeToHandle, type FileHandleLike } from './utils/fileSystem';
@@ -133,6 +134,7 @@ export default function App() {
   const [bassTuning, setBassTuning] = useState<BassTuningId | 'auto'>(settings.notation.bassTuning);
   const [notationPart, setNotationPart] = useState<NotationPart>('guitar');
   const [tabEdits, setTabEdits] = useState<TabEdits>({});
+  const [barSettings, setBarSettings] = useState<BarSettings>(DEFAULT_BAR_SETTINGS);
   const [quantize, setQuantize] = useState<QuantizeGrid>(settings.midi.quantize);
   const [minVelocity, setMinVelocity] = useState(settings.midi.minVelocity);
   const [midiPreviewMode, setMidiPreviewMode] = useState<'off' | 'keyboards' | 'drums' | 'combined'>('off');
@@ -223,6 +225,7 @@ export default function App() {
       setDoc(null);
       setOverrides({});
       setTabEdits({});
+      setBarSettings(DEFAULT_BAR_SETTINGS);
       setSaveStatus(p.sourceType === 'demo' ? 'none' : 'not-saved');
       setSaveMessage(p.sourceType === 'demo' ? undefined : 'Browser imports are not saved. Re-import with the Local GPU engine to keep this song.');
       setGuitarTuning(settingsRef.current.notation.guitarTuning);
@@ -324,6 +327,7 @@ export default function App() {
         setBassTuning((state.bassTuning as BassTuningId | 'auto') ?? settingsRef.current.notation.bassTuning);
         if (['guitar', 'guitar1', 'guitar2', 'lead', 'bass'].includes(state.notationPart ?? '')) setNotationPart(state.notationPart as NotationPart);
         setTabEdits(parseTabEdits(state.tabEdits));
+        setBarSettings(parseBarSettings(state.barLines));
         if (state.quantize) setQuantize(state.quantize as QuantizeGrid);
         if (typeof state.minVelocity === 'number') setMinVelocity(state.minVelocity);
         const loop = state.loop ?? loopEnabled;
@@ -421,14 +425,21 @@ export default function App() {
       minVelocity,
       notationPart,
       ...(Object.keys(tabEdits).length ? { tabEdits } : {}),
+      barLines: barSettings,
     }),
-    [overrides, mixer, transpose, playbackRate, loopEnabled, metronomeEnabled, guitarTuning, bassTuning, quantize, minVelocity, notationPart, tabEdits]
+    [overrides, mixer, transpose, playbackRate, loopEnabled, metronomeEnabled, guitarTuning, bassTuning, quantize, minVelocity, notationPart, tabEdits, barSettings]
   );
   const snapshotRef = useRef(stateSnapshot);
   snapshotRef.current = stateSnapshot;
 
   // tab corrections replace the automatic notes of their parts in tabs, sheet music, MIDI and exports
-  const editedProject = useMemo(() => (project ? applyTabEdits(project, tabEdits) : null), [project, tabEdits]);
+  // the song with its bar lines (beat tracker + the user's bar line edits) ...
+  const songProject = useMemo(() => (project ? { ...project, barSettings } : null), [project, barSettings]);
+  useEffect(() => {
+    if (songProject) engineRef.current?.updateProject(songProject); // metronome accents follow the bars
+  }, [songProject]);
+  // ... and with the tab corrections replacing their parts' notes
+  const editedProject = useMemo(() => (songProject ? applyTabEdits(songProject, tabEdits) : null), [songProject, tabEdits]);
   const handleTabEdit = useCallback((part: NotationPart, edit: PartEdit | undefined) => {
     setTabEdits((prev) => {
       const next = { ...prev };
@@ -463,7 +474,10 @@ export default function App() {
       lastSavedJson.current = json; // first snapshot after opening = what's on disk
       return;
     }
-    if (json === lastSavedJson.current) return;
+    if (json === lastSavedJson.current) {
+      setSaveStatus((st) => (st === 'pending' ? 'saved' : st)); // changed back to what's saved
+      return;
+    }
     setSaveStatus('pending');
     if (!settings.projects.autosave) return;
     const t = window.setTimeout(() => void flushSave(), 1200);
@@ -902,7 +916,7 @@ export default function App() {
 
       {project && (
         <TransportBar
-          project={project}
+          project={songProject ?? project}
           isPlaying={isPlaying}
           currentTime={currentTime}
           loopEnabled={loopEnabled}
@@ -969,9 +983,11 @@ export default function App() {
         ) : activeView === 'notation' ? (
           <NotationView
             project={editedProject ?? project}
-            autoProject={project}
+            autoProject={songProject ?? project}
             tabEdits={tabEdits}
             onTabEdit={handleTabEdit}
+            barSettings={barSettings}
+            onBarSettings={setBarSettings}
             currentTime={currentTime}
             transpose={transpose}
             onSeek={handleSeek}

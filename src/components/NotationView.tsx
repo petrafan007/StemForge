@@ -27,6 +27,7 @@ import { slugifyFilename, triggerTextDownload } from '../utils/download';
 import { layoutTab, type TabLayoutNote } from '../audio/tabLayout';
 import { keyToFifths } from '../audio/musicXml';
 import { TabStaff } from './TabStaff';
+import { barCountTo, barStartsFor, toggleBarLine, DEFAULT_BAR_SETTINGS, type BarSettings } from '../audio/bars';
 import { useTabEditor } from './useTabEditor';
 import type { PartEdit, TabEdits } from '../audio/tabEdits';
 import { ScoreView, printScore } from './ScoreView';
@@ -75,6 +76,8 @@ interface NotationViewProps {
   onOpenExport?: () => void;
   /** The automatic transcription (before the user's tab corrections). */
   autoProject?: SongProject;
+  barSettings?: BarSettings;
+  onBarSettings?: (settings: BarSettings) => void;
   tabEdits?: TabEdits;
   onTabEdit?: (part: NotationPart, edit: PartEdit | undefined) => void;
 }
@@ -243,6 +246,8 @@ export function NotationView({
   autoProject,
   tabEdits,
   onTabEdit,
+  barSettings,
+  onBarSettings,
 }: NotationViewProps) {
   const availableParts = notationParts(project);
   const part: NotationPart = availableParts.includes(requestedPart) ? requestedPart : 'guitar';
@@ -315,14 +320,28 @@ export function NotationView({
   const currentBeat = timeToBeat(project, currentTime);
   const beatsPerMeasure = quarterBeatsPerMeasure(project.timeSignature);
   const totalBeats = Math.max(beatsPerMeasure * 2, Math.ceil(timeToBeat(project, project.duration)));
-  const totalMeasures = Math.ceil(totalBeats / beatsPerMeasure);
+  const barStarts = useMemo(() => barStartsFor(project), [project]);
+  const totalMeasures = barCountTo(barStarts, totalBeats, beatsPerMeasure);
+  const [barMode, setBarMode] = useState(false);
+  const handleBeatClick = useCallback(
+    (beat: number) => {
+      if (!onBarSettings) return;
+      onBarSettings(toggleBarLine(barSettings ?? DEFAULT_BAR_SETTINGS, barStarts, beat, beatToTime(project, beat), (b) => beatToTime(project, b)));
+    },
+    [onBarSettings, barSettings, barStarts, project]
+  );
+  const oddBars = useMemo(() => {
+    let n = 0;
+    for (let i = 0; i + 1 < barStarts.length; i++) if (Math.abs(barStarts[i + 1] - barStarts[i] - beatsPerMeasure) > 1e-6) n += 1;
+    return n;
+  }, [barStarts, beatsPerMeasure]);
 
   const activeChord = transposedChords.find(
     (c) => currentBeat >= c.startBeat && currentBeat < c.startBeat + c.durationBeats
   );
 
   const handleCopyAsciiTab = async () => {
-    const ascii = generateAsciiTab(tabNotes, tuning, `${project.title} (${partName})`, project.bpm, Math.round(beatsPerMeasure));
+    const ascii = generateAsciiTab(tabNotes, tuning, `${project.title} (${partName})`, project.bpm, beatsPerMeasure, 4, barStarts);
     try {
       await navigator.clipboard.writeText(ascii);
     } catch {
@@ -333,7 +352,7 @@ export function NotationView({
   };
 
   const handleDownloadTab = () => {
-    const ascii = generateAsciiTab(tabNotes, tuning, `${project.title} (${partName})`, project.bpm, Math.round(beatsPerMeasure));
+    const ascii = generateAsciiTab(tabNotes, tuning, `${project.title} (${partName})`, project.bpm, beatsPerMeasure, 4, barStarts);
     triggerTextDownload(ascii, `${slugifyFilename(project.title)}_${part}_tab.txt`);
   };
 
@@ -362,8 +381,9 @@ export function NotationView({
         strings: tuning.openMidi.length,
         minVelocity: prefs.minVelocity,
         chords: transposedChords.map((c) => ({ startBeat: c.startBeat, symbol: c.displaySymbol })),
+        barStarts,
       }),
-    [tabNotes, prefs.detail, prefs.colWidth, prefs.minVelocity, beatsPerMeasure, totalBeats, tabWidth, tuning, transposedChords]
+    [tabNotes, prefs.detail, prefs.colWidth, prefs.minVelocity, beatsPerMeasure, totalBeats, tabWidth, tuning, transposedChords, barStarts]
   );
 
   const editor = useTabEditor({
@@ -377,6 +397,7 @@ export function NotationView({
     transpose,
     maxFret,
     beatsPerMeasure,
+    barStarts,
     onPreviewNote,
   });
   const partEdit = tabEdits?.[part];
@@ -637,10 +658,21 @@ export function NotationView({
               </span>
               {partEdit && (
                 <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-medium" title="This part shows your corrected tab (tabs, sheet music, MIDI and exports)">
-                  Your corrections{partEdit.checked.length ? ` · ${partEdit.checked.length} bars checked` : ''}
+                  Your corrections{partEdit.checkedAt.length ? ` · ${partEdit.checkedAt.length} bars checked` : ''}
                 </span>
               )}
-              {onTabEdit && !editor.editing && (
+              {onBarSettings && !editor.editing && (
+                <button
+                  type="button"
+                  onClick={() => setBarMode((v) => !v)}
+                  aria-pressed={barMode}
+                  title="Fix bar lines: start a bar on any beat or remove a bar line"
+                  className={`inline-flex items-center gap-1 px-2 py-1 rounded border cursor-pointer ${barMode ? 'bg-sky-400 text-[#0B0D10] border-sky-400 font-semibold' : 'bg-[#0B0D10] border-white/[0.1] text-slate-200 hover:text-white'}`}
+                >
+                  Bar lines{oddBars ? ` · ${oddBars} odd` : ''}
+                </button>
+              )}
+              {onTabEdit && !editor.editing && !barMode && (
                 <button type="button" onClick={editor.start} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[#0B0D10] border border-white/[0.1] text-slate-200 hover:text-white cursor-pointer">
                   <Pencil className="w-3 h-3" aria-hidden="true" />
                   {partEdit ? 'Edit tab' : 'Correct this tab'}
@@ -688,6 +720,30 @@ export function NotationView({
             </div>
           </div>
 
+          {barMode && !editor.editing && (
+            <div className="px-4 py-2 border-b border-white/[0.06] bg-sky-400/[0.06] flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-300">
+              <span className="font-semibold text-sky-300">Bar lines</span>
+              <span className="text-slate-400">Click a beat (dashed line) to start a bar there · click a bar line to remove it. Bars that differ from {project.timeSignature[0]}/{project.timeSignature[1]} show their length.</span>
+              <label className="inline-flex items-center gap-1.5 cursor-pointer" title={project.downbeatTimes?.length ? '' : 'Re-transcribe the song once to get the beat tracker\'s downbeats'}>
+                <input
+                  type="checkbox"
+                  className="accent-sky-400"
+                  disabled={!project.downbeatTimes?.length}
+                  checked={(barSettings ?? DEFAULT_BAR_SETTINGS).auto && Boolean(project.downbeatTimes?.length)}
+                  onChange={(e) => onBarSettings?.({ ...(barSettings ?? DEFAULT_BAR_SETTINGS), auto: e.target.checked })}
+                />
+                Follow the beat tracker's downbeats{project.downbeatTimes?.length ? '' : ' (re-transcribe once to get them)'}
+              </label>
+              <span className="ml-auto flex items-center gap-2">
+                <button type="button" onClick={() => onBarSettings?.({ ...(barSettings ?? DEFAULT_BAR_SETTINGS), add: [], remove: [] })} className="px-2 py-1 rounded text-rose-300 hover:bg-rose-500/10 cursor-pointer">
+                  Undo my bar line changes
+                </button>
+                <button type="button" onClick={() => setBarMode(false)} className="px-2.5 py-1 rounded bg-sky-400 text-[#0B0D10] font-semibold cursor-pointer">
+                  Done
+                </button>
+              </span>
+            </div>
+          )}
           {editor.editing && (
             <div className="px-4 py-2 border-b border-white/[0.06] bg-amber-500/[0.06] flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-300">
               <span className="font-semibold text-amber-300">Editing</span>
@@ -737,6 +793,8 @@ export function NotationView({
                 checkedBars={editor.checkedBars}
                 onCellClick={editor.addAt}
                 onBarClick={editor.toggleBar}
+                barMode={barMode && !editor.editing}
+                onBeatClick={handleBeatClick}
               />
               <p className="mt-2 text-[11px] text-slate-500">
                 {editor.editing
@@ -875,6 +933,7 @@ export function NotationView({
                 xml={sheetXml}
                 zoom={prefs.sheetZoom}
                 beatsPerMeasure={beatsPerMeasure}
+                barStarts={barStarts}
                 currentBeat={currentBeat}
                 follow={prefs.follow}
                 onSeekBeat={handleSeekBeat}

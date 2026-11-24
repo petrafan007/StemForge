@@ -76,6 +76,8 @@ export interface ProjectState {
   notationPart?: string;
   /** Tab corrections per part (src/audio/tabEdits.ts). */
   tabEdits?: unknown;
+  /** Bar line settings (src/audio/bars.ts). */
+  barLines?: unknown;
 }
 
 export interface ProjectDocument {
@@ -116,6 +118,8 @@ export interface ProjectDocument {
     /** Tempo map: time (s) of every beat, first beat on a bar line (Beat This! tracker). */
     beats?: number[];
     tempoEngine?: 'beat_this' | 'librosa';
+    /** The beat tracker's downbeats (s). */
+    downbeats?: number[];
   };
   transcription?: {
     engine: 'basic-pitch' | null;

@@ -1,4 +1,5 @@
 import type { TabNoteEvent } from '../types/music';
+import { barAt, barCountTo } from './bars';
 
 /**
  * Grid-based tablature layout (Guitar Pro style):
@@ -31,6 +32,8 @@ export interface TabLayoutMeasure {
   index: number;
   startCol: number;
   startBeat: number;
+  lengthBeats: number; // this bar's length (bars can differ: odd-meter bars)
+  steps: number; // grid columns in this bar
   x: number; // left edge inside the row's music area (px)
   width: number;
   empty: boolean;
@@ -75,6 +78,8 @@ export interface TabLayoutOptions {
   strings: number;
   minVelocity?: number;
   chords?: Array<{ startBeat: number; symbol: string }>;
+  /** Bar starts (quarter beats, src/audio/bars.ts); default: bars of beatsPerMeasure. */
+  barStarts?: number[];
 }
 
 export const TAB_LABEL_WIDTH = 30;
@@ -140,31 +145,41 @@ export function layoutTab(source: TabNoteEvent[], opts: TabLayoutOptions): TabLa
   const stepsPerBeat = Math.max(1, Math.round(1 / grid));
   const { notes: qnotes, merged } = quantizeTabNotes(source, grid, opts.minVelocity ?? 0);
   const lastCol = qnotes.reduce((m, n) => Math.max(m, n.col), 0);
-  const totalMeasures = Math.max(1, Math.ceil(Math.max(opts.totalBeats / opts.beatsPerMeasure, (lastCol + 1) / stepsPerMeasure)));
-  const fullWidth = TAB_PAD_LEFT + stepsPerMeasure * opts.colWidth + TAB_PAD_RIGHT;
-  const emptyWidth = Math.min(fullWidth, Math.max(56, fullWidth * 0.3));
+  const starts = opts.barStarts?.length ? opts.barStarts : [0];
+  const totalMeasures = Math.max(1, barCountTo(starts, Math.max(opts.totalBeats, (lastCol + 1) * grid), opts.beatsPerMeasure));
+  const bars = Array.from({ length: totalMeasures }, (_, m) => {
+    const b = barAt(starts, m, opts.beatsPerMeasure);
+    return { startBeat: b.start, lengthBeats: b.length, startCol: Math.round(b.start / grid), steps: Math.max(1, Math.round(b.length / grid)) };
+  });
+  const barOfCol = (col: number) => {
+    let lo = 0;
+    let hi = bars.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (bars[mid].startCol <= col) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
 
   // bucket notes and chord changes per measure
   const perMeasure: Array<Array<Omit<TabLayoutNote, 'x'>>> = Array.from({ length: totalMeasures }, () => []);
-  for (const n of qnotes) {
-    const m = Math.floor(n.col / stepsPerMeasure);
-    if (m < totalMeasures) perMeasure[m].push(n);
-  }
+  for (const n of qnotes) perMeasure[barOfCol(n.col)].push(n);
   const chordsPer: Array<Array<{ col: number; symbol: string }>> = Array.from({ length: totalMeasures }, () => []);
   let lastSymbol = '';
   for (const c of [...(opts.chords ?? [])].sort((a, b) => a.startBeat - b.startBeat)) {
     if (c.symbol === lastSymbol) continue;
     lastSymbol = c.symbol;
     const col = Math.max(0, Math.round(c.startBeat / grid));
-    const m = Math.floor(col / stepsPerMeasure);
-    if (m < totalMeasures) chordsPer[m].push({ col, symbol: c.symbol });
+    chordsPer[barOfCol(col)].push({ col, symbol: c.symbol });
   }
 
   const measures: TabLayoutMeasure[] = perMeasure.map((list, m) => {
-    const startCol = m * stepsPerMeasure;
+    const { startCol, steps, startBeat, lengthBeats } = bars[m];
+    const fullWidth = TAB_PAD_LEFT + steps * opts.colWidth + TAB_PAD_RIGHT;
     const empty = list.length === 0;
-    const width = empty ? emptyWidth : fullWidth;
-    const scale = empty ? (width - TAB_PAD_LEFT - TAB_PAD_RIGHT) / (stepsPerMeasure * opts.colWidth) : 1;
+    const width = empty ? Math.min(fullWidth, Math.max(56, fullWidth * 0.3)) : fullWidth;
+    const scale = empty ? (width - TAB_PAD_LEFT - TAB_PAD_RIGHT) / (steps * opts.colWidth) : 1;
     const xOf = (col: number) => TAB_PAD_LEFT + (col - startCol + 0.5) * opts.colWidth * scale;
     const chords: TabLayoutChord[] = [];
     for (const c of chordsPer[m]) {
@@ -176,7 +191,9 @@ export function layoutTab(source: TabNoteEvent[], opts: TabLayoutOptions): TabLa
     return {
       index: m,
       startCol,
-      startBeat: m * opts.beatsPerMeasure,
+      startBeat,
+      lengthBeats,
+      steps,
       x: 0,
       width,
       empty,
@@ -185,7 +202,8 @@ export function layoutTab(source: TabNoteEvent[], opts: TabLayoutOptions): TabLa
     };
   });
 
-  const available = Math.max(fullWidth, opts.containerWidth - TAB_LABEL_WIDTH - 4);
+  const widest = measures.reduce((w, m) => Math.max(w, m.width), 0);
+  const available = Math.max(widest, opts.containerWidth - TAB_LABEL_WIDTH - 4);
   const staffHeight = (opts.strings - 1) * TAB_STRING_GAP;
   const rowHeight = TAB_STAFF_TOP + staffHeight + TAB_BOTTOM;
   const rowGap = 14;
@@ -231,18 +249,17 @@ export function layoutTab(source: TabNoteEvent[], opts: TabLayoutOptions): TabLa
 /** x position (inside the row's music area) for a beat within a measure. */
 export function beatX(layout: TabLayout, measure: TabLayoutMeasure, beat: number): number {
   const inner = measure.width - layout.padLeft - layout.padRight;
-  const scale = inner / (layout.stepsPerMeasure * layout.colWidth);
+  const scale = inner / (measure.steps * layout.colWidth);
   const cols = (beat - measure.startBeat) / layout.grid + 0.5; // a note's center is half a column after its start
   return measure.x + layout.padLeft + Math.max(0, Math.min(inner, cols * layout.colWidth * scale));
 }
 
 /** Finds the row / measure that contains a beat. */
 export function locateBeat(layout: TabLayout, beat: number): { row: TabLayoutRow; measure: TabLayoutMeasure } | null {
-  const m = Math.floor(beat / layout.beatsPerMeasure);
   for (const row of layout.rows) {
-    const first = row.measures[0].index;
-    const last = row.measures[row.measures.length - 1].index;
-    if (m >= first && m <= last) return { row, measure: row.measures[m - first] };
+    const last = row.measures[row.measures.length - 1];
+    if (beat < row.measures[0].startBeat || beat >= last.startBeat + last.lengthBeats) continue;
+    for (let i = row.measures.length - 1; i >= 0; i--) if (row.measures[i].startBeat <= beat) return { row, measure: row.measures[i] };
   }
   return null;
 }

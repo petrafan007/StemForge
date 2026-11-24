@@ -7,6 +7,7 @@ import { tempoChangesFor } from '../audio/timeline';
 import { GM_PROGRAMS } from '../audio/gmPrograms';
 import { encodeWav, mixStems, preventClipping } from '../audio/clientExport';
 import { exportAudioOnServer } from '../audio/serverApi';
+import { timeSignatureChangesFor } from '../audio/bars';
 import { buildAsciiTab, buildMusicXml, hasGuitarSides, notationParts, partLabel, partNotes, type ResolvedTunings, type ScorePartId } from '../audio/scoreExport';
 import { formatTimecode } from '../utils/download';
 import { pickDirectory, sanitizeFileName, saveFileAs, writeFileInDirectory, downloadBlob, type FilePickerType } from '../utils/fileSystem';
@@ -456,6 +457,7 @@ function MidiExport({ project, transpose, settings, onRemember }: ExportDialogPr
   const run = async () => {
     setResult(null);
     const tempoChanges = tempoChangesFor(project);
+    const meters = timeSignatureChangesFor(project);
     const chosen = ids.filter((id) => selected[id]);
     if (chosen.length === 0) return setResult({ kind: 'error', text: 'Select at least one track.' });
     try {
@@ -463,7 +465,7 @@ function MidiExport({ project, transpose, settings, onRemember }: ExportDialogPr
         const dir = await pickDirectory('stemforge-midi-folder');
         const names: string[] = [];
         for (const id of chosen) {
-          const bytes = encodeMidiFile({ bpm: project.bpm, tempoChanges, timeSignature: project.timeSignature, ticksPerQuarter: ppq, tracks: [trackFor(id)] });
+          const bytes = encodeMidiFile({ bpm: project.bpm, tempoChanges, timeSignature: project.timeSignature, timeSignatureChanges: meters, ticksPerQuarter: ppq, tracks: [trackFor(id)] });
           const name = `${sanitizeFileName(`${baseName} - ${label(id)}`)}.mid`;
           if (dir) await writeFileInDirectory(dir, name, toBlob(bytes));
           else downloadBlob(toBlob(bytes), name);
@@ -475,6 +477,7 @@ function MidiExport({ project, transpose, settings, onRemember }: ExportDialogPr
           bpm: project.bpm,
           tempoChanges,
           timeSignature: project.timeSignature,
+          timeSignatureChanges: meters,
           ticksPerQuarter: ppq,
           tracks: chosen.map(trackFor),
           format: layout === 'type0' ? 0 : 1,

@@ -37,6 +37,9 @@ interface TabStaffProps {
   checkedBars?: Set<number>;
   onCellClick?: (col: number, stringIndex: number) => void;
   onBarClick?: (bar: number) => void;
+  /** Bar line mode: a click on a beat starts / removes a bar line there. */
+  barMode?: boolean;
+  onBeatClick?: (beat: number) => void;
 }
 
 const TabRow = memo(function TabRow({
@@ -52,6 +55,8 @@ const TabRow = memo(function TabRow({
   checkedBars,
   onCellClick,
   onBarClick,
+  barMode,
+  onBeatClick,
 }: {
   row: TabLayoutRow;
   layout: TabLayout;
@@ -65,6 +70,8 @@ const TabRow = memo(function TabRow({
   checkedBars?: Set<number>;
   onCellClick?: (col: number, stringIndex: number) => void;
   onBarClick?: (bar: number) => void;
+  barMode?: boolean;
+  onBeatClick?: (beat: number) => void;
 }) {
   const { labelWidth, staffTop, stringGap, strings, rowHeight } = layout;
   const width = labelWidth + row.width + 2;
@@ -89,7 +96,7 @@ const TabRow = memo(function TabRow({
 
         {row.measures.map((m) => {
           const inner = m.width - layout.padLeft - layout.padRight;
-          const beats = Math.round(layout.beatsPerMeasure);
+          const beats = Math.max(1, Math.round(m.lengthBeats));
           return (
             <g key={m.index} transform={`translate(${m.x},0)`}>
               {/* click target for seeking */}
@@ -99,18 +106,23 @@ const TabRow = memo(function TabRow({
                 width={m.width}
                 height={staffBottom - staffTop + 20}
                 fill="transparent"
-                className={editing ? 'cursor-crosshair hover:fill-white/[0.03]' : 'cursor-pointer hover:fill-white/[0.02]'}
+                className={editing || barMode ? 'cursor-crosshair hover:fill-white/[0.03]' : 'cursor-pointer hover:fill-white/[0.02]'}
                 onClick={(e) => {
                   const box = (e.currentTarget as SVGRectElement).getBoundingClientRect();
+                  if (barMode && onBeatClick) {
+                    const frac = Math.max(0, Math.min(1, (e.clientX - box.left - layout.padLeft) / Math.max(1, inner)));
+                    onBeatClick(m.startBeat + Math.round(frac * m.lengthBeats));
+                    return;
+                  }
                   if (editing && onCellClick) {
-                    const cell = (inner / layout.stepsPerMeasure) || layout.colWidth;
-                    const c = Math.max(0, Math.min(layout.stepsPerMeasure - 1, Math.floor((e.clientX - box.left - layout.padLeft) / cell)));
+                    const cell = (inner / m.steps) || layout.colWidth;
+                    const c = Math.max(0, Math.min(m.steps - 1, Math.floor((e.clientX - box.left - layout.padLeft) / cell)));
                     const s = Math.round((e.clientY - box.top + (staffTop - 10) - staffTop) / stringGap);
                     onCellClick(m.startCol + c, Math.max(0, Math.min(strings - 1, s)));
                     return;
                   }
                   const frac = Math.max(0, Math.min(1, (e.clientX - box.left - layout.padLeft) / Math.max(1, inner)));
-                  onSeekBeat(m.startBeat + frac * layout.beatsPerMeasure);
+                  onSeekBeat(m.startBeat + frac * m.lengthBeats);
                 }}
               />
               {/* bar number (in edit mode: click to mark the bar as checked) + chord changes */}
@@ -133,9 +145,20 @@ const TabRow = memo(function TabRow({
               ))}
               {/* beat ticks under the staff */}
               {Array.from({ length: beats }).map((_, b) => {
-                const x = layout.padLeft + (b / beats) * inner;
-                return <line key={b} x1={x} y1={staffBottom + 8} x2={x} y2={staffBottom + (b === 0 ? 15 : 12)} stroke={b === 0 ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.18)'} strokeWidth={1} />;
+                const x = layout.padLeft + (b / m.lengthBeats) * inner;
+                return (
+                  <g key={b}>
+                    {barMode && b > 0 && <line x1={x} y1={staffTop - 4} x2={x} y2={staffBottom + 4} stroke="rgba(56,189,248,0.35)" strokeWidth={1} strokeDasharray="3 3" />}
+                    <line x1={x} y1={staffBottom + 8} x2={x} y2={staffBottom + (b === 0 ? 15 : 12)} stroke={b === 0 ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.18)'} strokeWidth={1} />
+                  </g>
+                );
               })}
+              {/* odd bar length (e.g. 3/4 inside 4/4) */}
+              {Math.abs(m.lengthBeats - layout.beatsPerMeasure) > 1e-6 && (
+                <text x={m.width - 4} y={12} textAnchor="end" fontSize={9} fontFamily="JetBrains Mono, monospace" fill="#38BDF8">
+                  {Math.round(m.lengthBeats * 100) / 100}/4
+                </text>
+              )}
               {/* sustain lines */}
               {showSustain &&
                 m.notes
@@ -231,7 +254,7 @@ function Playhead({ layout, currentBeat, palette, follow, containerRef }: { layo
   );
 }
 
-export function TabStaff({ layout, tuning, instrument, showSustain, currentBeat, follow, onNoteClick, onSeekBeat, editing, selectedId, checkedBars, onCellClick, onBarClick }: TabStaffProps) {
+export function TabStaff({ layout, tuning, instrument, showSustain, currentBeat, follow, onNoteClick, onSeekBeat, editing, selectedId, checkedBars, onCellClick, onBarClick, barMode, onBeatClick }: TabStaffProps) {
   const palette = PALETTES[instrument];
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rows = useMemo(
@@ -251,10 +274,12 @@ export function TabStaff({ layout, tuning, instrument, showSustain, currentBeat,
             checkedBars={checkedBars}
             onCellClick={onCellClick}
             onBarClick={onBarClick}
+            barMode={barMode}
+            onBeatClick={onBeatClick}
           />
         </div>
       )),
-    [layout, tuning, palette, showSustain, onNoteClick, onSeekBeat, editing, selectedId, checkedBars, onCellClick, onBarClick]
+    [layout, tuning, palette, showSustain, onNoteClick, onSeekBeat, editing, selectedId, checkedBars, onCellClick, onBarClick, barMode, onBeatClick]
   );
   return (
     <div ref={containerRef} className="relative" style={{ height: layout.totalHeight, width: layout.labelWidth + layout.maxRowWidth + 4 }}>

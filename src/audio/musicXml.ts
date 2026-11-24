@@ -1,3 +1,4 @@
+import { barAt, barCountTo, barTimeSignature } from './bars';
 import type { MidiNoteEvent, TabNoteEvent } from '../types/music';
 import type { TuningPreset } from './notationEngine';
 
@@ -37,6 +38,8 @@ export interface MusicXmlScoreInput {
   timeSignature?: [number, number];
   /** @deprecated use timeSignature */
   beatsPerMeasure?: number;
+  /** Bar starts (quarter beats) when bars differ in length (src/audio/bars.ts); default: regular bars. */
+  barStarts?: number[];
   accidentals?: 'auto' | 'sharps' | 'flats';
   /** Chord symbols written above the first part (quarter-note beats). */
   chords?: Array<{ startBeat: number; rootPc: number; quality: 'maj' | 'min' | '7' | 'maj7' | 'm7' | '5' }>;
@@ -335,7 +338,18 @@ function planPart(part: MusicXmlPartInput): StaffPlan[] {
 
 export function encodeMusicXml(score: MusicXmlScoreInput): string {
   const [tsNum, tsDen] = score.timeSignature ?? [score.beatsPerMeasure ?? 4, 4];
-  const mLen = Math.max(1, Math.round((tsNum * 4 * DIVISIONS) / (tsDen || 4)));
+  const perBar = (tsNum * 4) / (tsDen || 4);
+  const mLenRegular = Math.max(1, Math.round(perBar * DIVISIONS));
+  const bars = score.barStarts?.length ? score.barStarts : null;
+  const measureAt = (m: number) => {
+    if (!bars) return { start: m * mLenRegular, len: mLenRegular };
+    const b = barAt(bars, m, perBar);
+    return { start: Math.round(b.start * DIVISIONS), len: Math.max(1, Math.round(b.length * DIVISIONS)) };
+  };
+  const timeXml = (len: number) => {
+    const [num, den] = bars ? barTimeSignature(len / DIVISIONS, tsDen || 4) : [tsNum, tsDen];
+    return `<time><beats>${num}</beats><beat-type>${den}</beat-type></time>`;
+  };
   const fifths = keyToFifths(score.keyRootPc, score.keyMode);
   const useFlats = score.accidentals === 'flats' ? true : score.accidentals === 'sharps' ? false : fifths < 0;
   const bpm = Math.round(Math.max(20, Math.min(300, score.bpm || 120)));
@@ -349,13 +363,13 @@ export function encodeMusicXml(score: MusicXmlScoreInput): string {
     if (prev && prev.div === div) chordStarts.pop();
     chordStarts.push({ div, rootPc: c.rootPc, quality: c.quality });
   }
-  let lastDiv = mLen;
+  let lastDiv = mLenRegular;
   for (const { staves } of plans) {
     for (const s of staves) {
       for (const it of s.items) lastDiv = Math.max(lastDiv, it.start + it.dur);
     }
   }
-  const totalMeasures = Math.max(1, Math.ceil(lastDiv / mLen));
+  const totalMeasures = bars ? barCountTo(bars, lastDiv / DIVISIONS, perBar) : Math.max(1, Math.ceil(lastDiv / mLenRegular));
 
   const partList = plans
     .map(({ part }, idx) => {
@@ -375,8 +389,12 @@ export function encodeMusicXml(score: MusicXmlScoreInput): string {
   const partsXml = plans
     .map(({ part, staves }, partIdx) => {
       const measures: string[] = [];
+      let prevLen = -1;
       for (let m = 0; m < totalMeasures; m++) {
         const body: string[] = [];
+        const { start: mStart, len: mLen } = measureAt(m);
+        if (m > 0 && mLen !== prevLen) body.push(`<attributes>${timeXml(mLen)}</attributes>`);
+        prevLen = mLen;
         if (m === 0) {
           const stavesXml = staves.length > 1 ? `<staves>${staves.length}</staves>` : '';
           const clefs = staves.map((s) => s.clefXml).join('');
@@ -385,7 +403,7 @@ export function encodeMusicXml(score: MusicXmlScoreInput): string {
             ? '<transpose><diatonic>0</diatonic><chromatic>0</chromatic><octave-change>-1</octave-change></transpose>'
             : '';
           body.push(
-            `<attributes><divisions>${DIVISIONS}</divisions><key><fifths>${fifths}</fifths><mode>${score.keyMode}</mode></key><time><beats>${tsNum}</beats><beat-type>${tsDen}</beat-type></time>${stavesXml}${clefs}${details}${transpose}</attributes>`
+            `<attributes><divisions>${DIVISIONS}</divisions><key><fifths>${fifths}</fifths><mode>${score.keyMode}</mode></key>${timeXml(mLen)}${stavesXml}${clefs}${details}${transpose}</attributes>`
           );
           if (partIdx === 0) {
             body.push(
@@ -395,12 +413,12 @@ export function encodeMusicXml(score: MusicXmlScoreInput): string {
         }
         staves.forEach((s, sIdx) => {
           if (sIdx > 0) body.push(`<backup><duration>${mLen}</duration></backup>`);
-          const segs = segmentsForMeasure(s.items, m * mLen, mLen);
+          const segs = segmentsForMeasure(s.items, mStart, mLen);
           const harmonies =
             partIdx === 0 && sIdx === 0
               ? chordStarts
-                  .filter((c) => c.div >= m * mLen && c.div < (m + 1) * mLen)
-                  .map((c) => ({ pos: c.div - m * mLen, xml: harmonyXml(c.rootPc, c.quality, useFlats, s.staff) }))
+                  .filter((c) => c.div >= mStart && c.div < mStart + mLen)
+                  .map((c) => ({ pos: c.div - mStart, xml: harmonyXml(c.rootPc, c.quality, useFlats, s.staff) }))
               : [];
           body.push(...renderSegments(segs, mLen, s.staff, s.voice, useFlats, s.technical, harmonies));
         });

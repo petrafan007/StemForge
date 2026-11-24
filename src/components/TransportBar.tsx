@@ -1,6 +1,7 @@
 import { Loader2, Pause, Play, Repeat, Square, Timer, Minus, Plus } from 'lucide-react';
 import type { SongProject } from '../types/music';
 import { formatKeySignature } from '../audio/notationEngine';
+import { barPosition, barStartsFor } from '../audio/bars';
 import { quarterBeatsPerMeasure, timeToBeat } from '../audio/timeline';
 import { formatTimecode } from '../utils/download';
 
@@ -50,10 +51,11 @@ export function TransportBar({
   const varispeed = pitchMode === 'varispeed' ? 2 ** (transpose / 12) : 1;
   const effectiveBpm = Math.round(project.bpm * playbackRate * varispeed);
   const keyLabel = formatKeySignature(project.keyRootPc, project.keyMode, transpose);
-  const perBar = Math.max(1, Math.round(quarterBeatsPerMeasure(project.timeSignature)));
+  const perBar = quarterBeatsPerMeasure(project.timeSignature);
   const currentBeat = Math.max(0, Math.floor(timeToBeat(project, currentTime)));
-  const barNumber = Math.floor(currentBeat / perBar) + 1;
-  const beatInBar = (currentBeat % perBar) + 1;
+  const bar = barPosition(barStartsFor(project), currentBeat, perBar);
+  const barNumber = bar.index + 1;
+  const beatInBar = Math.floor(currentBeat - bar.start + 1e-6) + 1;
   const progressPct = project.duration > 0 ? Math.min(100, (currentTime / project.duration) * 100) : 0;
 
   return (

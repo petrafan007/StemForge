@@ -1,3 +1,4 @@
+import { barAt, barCountTo } from './bars';
 import type {
   BassTuningId,
   ChordEvent,
@@ -442,9 +443,16 @@ export function generateAsciiTab(
   title: string,
   bpm: number,
   beatsPerMeasure = 4,
-  stepsPerBeat = 4
+  stepsPerBeat = 4,
+  barStarts?: number[]
 ): string {
   const steps = Math.max(1, Math.round(beatsPerMeasure * stepsPerBeat));
+  const bars = barStarts?.length ? barStarts : null;
+  const measure = (m: number) => {
+    if (!bars) return { col: m * steps, steps };
+    const b = barAt(bars, m, beatsPerMeasure);
+    return { col: Math.round(b.start * stepsPerBeat), steps: Math.max(1, Math.round(b.length * stepsPerBeat)) };
+  };
   const cell = 3;
   // snap + merge (keep the loudest note per string and column)
   const cells = new Map<string, TabNoteEvent>();
@@ -456,7 +464,7 @@ export function generateAsciiTab(
     if (!prev || n.velocity > prev.velocity) cells.set(key, n);
     lastCol = Math.max(lastCol, col);
   }
-  const totalMeasures = Math.max(1, Math.ceil((lastCol + 1) / steps));
+  const totalMeasures = bars ? barCountTo(bars, (lastCol + 1) / stepsPerBeat, beatsPerMeasure) : Math.max(1, Math.ceil((lastCol + 1) / steps));
   const measuresPerRow = stepsPerBeat >= 4 ? 2 : 4;
   const labelWidth = Math.max(...tuning.stringNames.map((n) => n.length)) + 1;
   const lines: string[] = [
@@ -468,13 +476,14 @@ export function generateAsciiTab(
   for (let rowStart = 0; rowStart < totalMeasures; rowStart += measuresPerRow) {
     const rowEnd = Math.min(totalMeasures, rowStart + measuresPerRow);
     let numbers = ' '.repeat(labelWidth + 1);
-    for (let m = rowStart; m < rowEnd; m++) numbers += String(m + 1).padEnd(steps * cell + 1, ' ');
+    for (let m = rowStart; m < rowEnd; m++) numbers += String(m + 1).padEnd(measure(m).steps * cell + 1, ' ');
     lines.push(numbers.trimEnd());
     for (let s = 0; s < tuning.stringNames.length; s++) {
       let line = `${tuning.stringNames[s].padEnd(labelWidth, ' ')}|`;
       for (let m = rowStart; m < rowEnd; m++) {
-        for (let c = 0; c < steps; c++) {
-          const note = cells.get(`${s}:${m * steps + c}`);
+        const ms = measure(m);
+        for (let c = 0; c < ms.steps; c++) {
+          const note = cells.get(`${s}:${ms.col + c}`);
           line += note ? String(note.fret).padEnd(cell, '-') : '-'.repeat(cell);
         }
         line += '|';

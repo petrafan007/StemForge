@@ -22,6 +22,7 @@ Free, local-first stem separator, MIDI studio, and guitar/bass tab and sheet mus
   - **Drums:** the optional **ADTOF** neural model, trained on rock and metal charts, or a built-in onset detector.
   - **Clean-up:** distorted power chords are simplified, and silent tracks are skipped, so you don't get phantom notes from bleed.
 - **Tempo map, bars, key and time signature** are detected automatically. **Beat This!** tracks every beat and downbeat, so bars and the playhead follow the band's real tempo instead of drifting off a fixed BPM. Anything can be corrected per song, including ½×/2× tempo, a beat-grid nudge, 6/8 or 7/8, and key.
+- **Bar lines that follow the music:** where the beat tracker's downbeats agree for several bars in a row that a section starts on another beat, the bar lines move with it, and odd-meter bars (3/4, 5/4 ...) appear in the tab, the sheet music, MusicXML, MIDI and the metronome. In the tab, *Bar lines* lets you start a bar on any beat or remove a bar line; your changes are saved with the song.
 - **In-sync playback:** the playhead and the highlighted tab notes follow what you hear. The audio device's output latency is measured and compensated, notes light up at their real attack, and **Settings → Playback Sync** adds a manual delay for Bluetooth headphones.
 - **Tabs and sheet music:**
   - Whole-part tab fingering: power-chord shapes, few position shifts in fast passages, and the same riff fingered the same way every time it repeats.

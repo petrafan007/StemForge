@@ -96,13 +96,13 @@ test('the automatic transcription is scored against the corrections in checked b
   assert.equal(s.detected, 3);
   assert.equal(s.matched, 1);
   assert.ok(Math.abs(s.f - 1 / 3) < 1e-9);
-  assert.deepEqual(toggleChecked(edit, 0).checked, [], 'toggling again unchecks');
+  assert.deepEqual(toggleChecked(edit, 0).checkedAt, [], 'toggling again unchecks');
 });
 
 test('stored corrections are validated when a song is opened', () => {
-  const parsed = parseTabEdits({ guitar1: { notes: [{ id: 1, t: 0, d: 0.2, midi: 40, vel: 90, string: 5 }, { bad: true }], checked: [0, 'x'] }, nonsense: {} });
+  const parsed = parseTabEdits({ guitar1: { notes: [{ id: 1, t: 0, d: 0.2, midi: 40, vel: 90, string: 5 }, { bad: true }], checkedAt: [0, 'x'] }, nonsense: {} });
   assert.equal(parsed.guitar1?.notes.length, 1);
-  assert.deepEqual(parsed.guitar1?.checked, [0]);
+  assert.deepEqual(parsed.guitar1?.checkedAt, [0]);
   assert.equal(parsed.guitar1?.nextId, 2);
   assert.deepEqual(parseTabEdits(null), {});
 });

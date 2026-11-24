@@ -1,6 +1,7 @@
 import type { DrumHitEvent, MidiNoteEvent, SongProject, StemId, StemMixerState } from '../types/music';
 import { ALL_STEM_IDS } from '../types/music';
 import { midiToFrequency } from './notationEngine';
+import { barStartsFor, isBarStart } from './bars';
 import { beatToTime, quarterBeatsPerMeasure, timeToBeat } from './timeline';
 
 /**
@@ -346,8 +347,8 @@ export class MultiStemAudioEngine {
           const dt = at(nextBeat);
           if (dt <= 0.15) {
             this.lastScheduledBeat = nextBeat;
-            const perBar = Math.max(1, Math.round(quarterBeatsPerMeasure(this.project.timeSignature)));
-            this.scheduleClick(this.ctx, this.ctx.currentTime + Math.max(0, dt), nextBeat % perBar === 0);
+            const perBar = quarterBeatsPerMeasure(this.project.timeSignature);
+            this.scheduleClick(this.ctx, this.ctx.currentTime + Math.max(0, dt), isBarStart(barStartsFor(this.project), nextBeat, perBar));
           }
         }
       }

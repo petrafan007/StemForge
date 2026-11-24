@@ -159,4 +159,6 @@ def tempo_map(
         "beatOffsetSec": round(beats_out[0], 4),
         "timeSignature": [int(num), 4],
         "bpmCandidates": [round(bpm, 1), round(bpm / 2, 1), round(bpm * 2, 1)],
+        # the tracker's own downbeats: where bars really start (odd-meter bars, shifted sections)
+        "downbeats": [round(float(x), 4) for x in d],
     }

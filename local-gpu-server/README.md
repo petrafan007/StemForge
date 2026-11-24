@@ -32,7 +32,7 @@ The Python backend for StemForge. It runs on http://127.0.0.1:8000 (this compute
    - **Keyboards and vocals:** Spotify **Basic Pitch** (ONNX, CPU) transcribes polyphonic notes.
    - **Silence gating:** keeps bleed from turning into phantom notes.
    - **Drums:** **ADTOF** if it's installed (`setup_windows.ps1 -WithAdtof`), otherwise a band-limited onset detector.
-   - **Tempo map:** **Beat This!** (CPJKU, ISMIR 2024) finds every beat and downbeat. The beats are kept at one metrical level for the whole song (half-time and double-time stretches are folded), and bar lines come from the downbeats. librosa is the fallback.
+   - **Tempo map:** **Beat This!** (CPJKU, ISMIR 2024) finds every beat and downbeat. The beats are kept at one metrical level for the whole song (half-time and double-time stretches are folded), and bar lines come from the downbeats. The downbeats are also saved (`analysis.downbeats`) so the app can follow sections and odd-meter bars that start on another beat. librosa is the fallback.
 3. **Project library:**
    - **Drafts** are saved in `Documents\StemForge\Projects` by default. The folder can be changed in Settings.
    - **`.sfg`** project files can be packed and unpacked.

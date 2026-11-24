@@ -137,6 +137,8 @@ export function encodeMidiFile(options: {
   /** Tempo map (beat -> BPM from that beat on); overrides bpm so the file follows the real tempo. */
   tempoChanges?: Array<{ beat: number; bpm: number }>;
   timeSignature?: [number, number];
+  /** Bars of other lengths (odd-meter bars): a time signature event at each change. */
+  timeSignatureChanges?: Array<{ beat: number; num: number; den: number }>;
   ticksPerQuarter?: number;
   tracks: MidiTrackInput[];
   /** 1 = one track per instrument (default), 0 = everything merged into a single track. */
@@ -152,13 +154,14 @@ export function encodeMidiFile(options: {
   const changes = options.tempoChanges?.length ? options.tempoChanges : [{ beat: 0, bpm }];
 
   // Tempo & Time Signature master track (Track 0)
+  const meters = options.timeSignatureChanges?.length ? options.timeSignatureChanges : [{ beat: 0, num, den }];
   const tempoEvents: RawMidiEvent[] = [
     ...changes.map((c, i) => tempoEvent(i === 0 ? 0 : Math.max(0, Math.round(c.beat * ppq)), c.bpm)),
-    {
-      tick: 0,
+    ...meters.map((m, i) => ({
+      tick: i === 0 ? 0 : Math.max(0, Math.round(m.beat * ppq)),
       order: 0,
-      bytes: [0xff, 0x58, 0x04, num & 0xff, Math.round(Math.log2(den)) & 0xff, 24, 8],
-    },
+      bytes: [0xff, 0x58, 0x04, m.num & 0xff, Math.round(Math.log2(m.den)) & 0xff, 24, 8],
+    })),
   ];
 
   const chunks: number[][] = [];

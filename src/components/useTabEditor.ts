@@ -3,8 +3,10 @@ import type { NotationPart, SongProject } from '../types/music';
 import type { TuningPreset } from '../audio/notationEngine';
 import { partNotes } from '../audio/scoreExport';
 import type { TabLayout, TabLayoutNote } from '../audio/tabLayout';
+import { barAt, barPosition } from '../audio/bars';
 import {
   addNote,
+  checkedBarIndices,
   deleteNote,
   editedNoteId,
   parseEditedId,
@@ -37,6 +39,8 @@ export interface TabEditorOptions {
   transpose: number;
   maxFret: number;
   beatsPerMeasure: number;
+  /** The song's bar starts (src/audio/bars.ts). */
+  barStarts: number[];
   onPreviewNote: (midi: number, durationSec?: number) => void;
 }
 
@@ -58,7 +62,7 @@ export interface TabEditor {
 }
 
 export function useTabEditor(o: TabEditorOptions): TabEditor {
-  const { project, autoProject, part, edit, onTabEdit, layout, tuning, transpose, maxFret, beatsPerMeasure, onPreviewNote } = o;
+  const { project, autoProject, part, edit, onTabEdit, layout, tuning, transpose, maxFret, beatsPerMeasure, barStarts, onPreviewNote } = o;
   const [editing, setEditing] = useState(false);
   const [selected, setSelected] = useState<number | null>(null);
   const [history, setHistory] = useState<{ past: PartEdit[]; future: PartEdit[] }>({ past: [], future: [] });
@@ -79,7 +83,11 @@ export function useTabEditor(o: TabEditorOptions): TabEditor {
     [edit, onTabEdit, part]
   );
 
-  const barOfTime = useCallback((t: number) => Math.floor(timeToBeat(project, t) / beatsPerMeasure + 1e-9), [project, beatsPerMeasure]);
+  /** Start time (s) of the bar that contains `t`: how checked bars are stored. */
+  const barOfTime = useCallback(
+    (t: number) => beatToTime(project, barPosition(barStarts, timeToBeat(project, t) + 1e-6, beatsPerMeasure).start),
+    [project, barStarts, beatsPerMeasure]
+  );
 
   // the notes as laid out (string / fret as shown), in reading order
   const shown = useMemo(() => {
@@ -132,7 +140,10 @@ export function useTabEditor(o: TabEditorOptions): TabEditor {
     [edit, layout.grid, project, tuning, transpose, commit, barOfTime, onPreviewNote]
   );
 
-  const toggleBar = useCallback((bar: number) => edit && commit(toggleChecked(edit, bar)), [edit, commit]);
+  const toggleBar = useCallback(
+    (bar: number) => edit && commit(toggleChecked(edit, beatToTime(project, barAt(barStarts, bar, beatsPerMeasure).start))),
+    [edit, commit, project, barStarts, beatsPerMeasure]
+  );
 
   const undo = useCallback(() => {
     const prev = history.past[history.past.length - 1];
@@ -224,7 +235,7 @@ export function useTabEditor(o: TabEditorOptions): TabEditor {
   }, [editing, edit, selected, shown, shownById, part, commit, undo, redo, barOfTime, tuning, transpose, maxFret, onPreviewNote]);
 
   const score = useMemo(() => (edit ? scoreAgainstCorrections(project, partNotes(autoProject, part), edit) : null), [edit, project, autoProject, part]);
-  const checkedBars = useMemo(() => new Set(edit?.checked ?? []), [edit]);
+  const checkedBars = useMemo(() => (edit ? checkedBarIndices(project, edit) : new Set<number>()), [edit, project]);
 
   return {
     editing,

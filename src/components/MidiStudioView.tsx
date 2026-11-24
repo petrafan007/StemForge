@@ -1,3 +1,4 @@
+import { timeSignatureChangesFor } from '../audio/bars';
 import { useMemo, useState } from 'react';
 import { Download, Volume2 } from 'lucide-react';
 import type { DrumHitEvent, DrumVoice, MidiNoteEvent, QuantizeGrid, SongProject } from '../types/music';
@@ -451,6 +452,7 @@ export function MidiStudioView({
       bpm: project.bpm,
       tempoChanges: tempoChangesFor(project),
       timeSignature: project.timeSignature,
+      timeSignatureChanges: timeSignatureChangesFor(project),
       tracks: buildTracks(scope),
     });
     const suffix = scope === 'all' ? 'all_stems' : scope;

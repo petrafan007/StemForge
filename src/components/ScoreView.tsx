@@ -1,3 +1,4 @@
+import { barAt, barPosition } from '../audio/bars';
 import { useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import type { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
@@ -20,6 +21,8 @@ interface ScoreViewProps {
   xml: string;
   zoom: number;
   beatsPerMeasure: number;
+  /** Bar starts (quarter beats, src/audio/bars.ts); default: regular bars. */
+  barStarts?: number[];
   currentBeat: number;
   follow: boolean;
   onSeekBeat: (beat: number) => void;
@@ -82,7 +85,8 @@ const OPTIONS = {
   pageBackgroundColor: '#FFFFFF',
 } as const;
 
-export function ScoreView({ xml, zoom, beatsPerMeasure, currentBeat, follow, onSeekBeat, onReady }: ScoreViewProps) {
+export function ScoreView({ xml, zoom, beatsPerMeasure, barStarts, currentBeat, follow, onSeekBeat, onReady }: ScoreViewProps) {
+  const starts = barStarts?.length ? barStarts : [0];
   const hostRef = useRef<HTMLDivElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const osmdRef = useRef<OpenSheetMusicDisplay | null>(null);
@@ -144,7 +148,8 @@ export function ScoreView({ xml, zoom, beatsPerMeasure, currentBeat, follow, onS
     };
   }, [xml, zoom, width]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const measureIdx = Math.floor(Math.max(0, currentBeat) / beatsPerMeasure);
+  const bar = barPosition(starts, Math.max(0, currentBeat), beatsPerMeasure);
+  const measureIdx = bar.index;
   const active = status === 'ready' ? boxes.find((b) => b.index === measureIdx) : undefined;
 
   useEffect(() => {
@@ -157,7 +162,7 @@ export function ScoreView({ xml, zoom, beatsPerMeasure, currentBeat, follow, onS
     }
   }, [active?.y, follow]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const playX = active ? active.x + Math.max(0, Math.min(1, (currentBeat - measureIdx * beatsPerMeasure) / beatsPerMeasure)) * active.w : 0;
+  const playX = active ? active.x + Math.max(0, Math.min(1, (currentBeat - bar.start) / bar.length)) * active.w : 0;
 
   return (
     <div ref={wrapRef} className="relative">
@@ -171,7 +176,10 @@ export function ScoreView({ xml, zoom, beatsPerMeasure, currentBeat, follow, onS
           const x = e.clientX - r.left;
           const y = e.clientY - r.top;
           const hit = boxes.find((b) => x >= b.x && x <= b.x + b.w && y >= b.y - 10 && y <= b.y + b.h + 10);
-          if (hit) onSeekBeat(hit.index * beatsPerMeasure + ((x - hit.x) / Math.max(1, hit.w)) * beatsPerMeasure);
+          if (hit) {
+            const b = barAt(starts, hit.index, beatsPerMeasure);
+            onSeekBeat(b.start + ((x - hit.x) / Math.max(1, hit.w)) * b.length);
+          }
         }}
       />
       {active && (

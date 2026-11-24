@@ -2,6 +2,8 @@
  * Audio tracks. 'guitar1' / 'guitar2' are the left and right rhythm guitars split from the guitar stem
  * (the server lists them instead of 'guitar' when the two guitars sit on opposite sides).
  */
+import type { BarSettings } from '../audio/bars';
+
 export type StemId = 'vocals' | 'guitar' | 'guitar1' | 'guitar2' | 'lead' | 'bass' | 'drums' | 'keyboards';
 
 /** Guitar tracks (for presets such as "Guitars only"). */
@@ -216,6 +218,10 @@ export interface SongProject {
   beatOffsetSec: number;
   /** Tempo map: real time (s) of every beat from the beat tracker. When set it replaces bpm/offset math. */
   beatTimes?: number[];
+  /** The beat tracker's downbeats (s): where bars start (src/audio/bars.ts). */
+  downbeatTimes?: number[];
+  /** Bar line settings and edits (src/audio/bars.ts). */
+  barSettings?: BarSettings;
   timeSignature: [number, number]; // e.g. [4, 4]
   keyRootPc: number; // 0-11
   keyMode: 'major' | 'minor';

@@ -1,7 +1,8 @@
 import type { MidiNoteEvent, NotationPart, SongProject } from '../types/music';
 import { midiToNoteName } from './notationEngine';
 import { partNotes } from './scoreExport';
-import { beatToTime, quarterBeatsPerMeasure, timeToBeat, type BeatGrid } from './timeline';
+import { barIndexAt, barStartsFor } from './bars';
+import { beatToTime, timeToBeat, type BeatGrid } from './timeline';
 
 /**
  * Tab corrections. The first edit of a part copies its automatic notes; from then on the part shows
@@ -22,8 +23,8 @@ export interface EditedNote {
 
 export interface PartEdit {
   notes: EditedNote[];
-  /** Bar indices (0-based) the user has checked against the recording. */
-  checked: number[];
+  /** Start times (s) of the bars the user has checked against the recording (bar lines can move). */
+  checkedAt: number[];
   nextId: number;
 }
 
@@ -37,7 +38,7 @@ export function snapshotPart(project: SongProject, part: NotationPart): PartEdit
     const t = beatToTime(project, n.startBeat);
     return { id: i + 1, t: round(t), d: round(Math.max(0.02, beatToTime(project, n.startBeat + n.durationBeats) - t)), midi: n.midi, vel: n.velocity };
   });
-  return { notes, checked: [], nextId: notes.length + 1 };
+  return { notes, checkedAt: [], nextId: notes.length + 1 };
 }
 
 export const editedNoteId = (part: NotationPart, id: number) => `edit-${part}-${id}`;
@@ -93,11 +94,19 @@ export function addNote(edit: PartEdit, note: Omit<EditedNote, 'id'>): { edit: P
   return { edit: { ...edit, notes: [...edit.notes, { ...note, id }].sort((a, b) => a.t - b.t || a.midi - b.midi), nextId: id + 1 }, id };
 }
 
-export function toggleChecked(edit: PartEdit, bar: number, on?: boolean): PartEdit {
-  const has = edit.checked.includes(bar);
+/** Marks / unmarks the bar that starts at `barStartTime` (s) as checked. */
+export function toggleChecked(edit: PartEdit, barStartTime: number, on?: boolean): PartEdit {
+  const t = Math.round(barStartTime * 1000) / 1000;
+  const has = edit.checkedAt.some((x) => Math.abs(x - t) < 0.02);
   const want = on ?? !has;
   if (want === has) return edit;
-  return { ...edit, checked: want ? [...edit.checked, bar].sort((a, b) => a - b) : edit.checked.filter((b) => b !== bar) };
+  return { ...edit, checkedAt: want ? [...edit.checkedAt, t].sort((a, b) => a - b) : edit.checkedAt.filter((x) => Math.abs(x - t) >= 0.02) };
+}
+
+/** Indices of the checked bars under the song's current bar lines. */
+export function checkedBarIndices(project: SongProject, edit: PartEdit): Set<number> {
+  const starts = barStartsFor(project);
+  return new Set(edit.checkedAt.map((t) => barIndexAt(starts, timeToBeat(project, t) + 1e-6)));
 }
 
 /** Parses the id of a corrected note from a studio note id ("edit-guitar1-17" -> 17). */
@@ -123,10 +132,10 @@ export interface CorrectionScore {
  * a note counts when the corrected part has the same pitch starting within `tolerance` seconds.
  */
 export function scoreAgainstCorrections(project: SongProject, auto: MidiNoteEvent[], edit: PartEdit, tolerance = 0.05): CorrectionScore | null {
-  if (!edit.checked.length) return null;
-  const perBar = quarterBeatsPerMeasure(project.timeSignature);
-  const checked = new Set(edit.checked);
-  const inChecked = (beat: number) => checked.has(Math.floor(beat / perBar + 1e-9));
+  if (!edit.checkedAt.length) return null;
+  const starts = barStartsFor(project);
+  const checked = checkedBarIndices(project, edit);
+  const inChecked = (beat: number) => checked.has(barIndexAt(starts, beat));
   const ref = edit.notes.filter((n) => inChecked(timeToBeat(project, n.t)));
   const est = auto.filter((n) => inChecked(n.startBeat)).map((n) => ({ t: beatToTime(project, n.startBeat), midi: n.midi }));
   const used = new Set<number>();
@@ -149,7 +158,7 @@ export function scoreAgainstCorrections(project: SongProject, auto: MidiNoteEven
   const precision = est.length ? matched / est.length : ref.length ? 0 : 1;
   const recall = ref.length ? matched / ref.length : 1;
   const f = precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : 0;
-  return { bars: edit.checked.length, reference: ref.length, detected: est.length, matched, precision, recall, f };
+  return { bars: checked.size, reference: ref.length, detected: est.length, matched, precision, recall, f };
 }
 
 /** Validates stored corrections (from a saved project state). */
@@ -162,9 +171,9 @@ export function parseTabEdits(raw: unknown): TabEdits {
     const notes = e.notes
       .filter((n): n is EditedNote => Boolean(n) && typeof n.t === 'number' && typeof n.d === 'number' && typeof n.midi === 'number' && typeof n.id === 'number')
       .map((n) => ({ id: n.id, t: n.t, d: n.d, midi: n.midi, vel: typeof n.vel === 'number' ? n.vel : 100, ...(typeof n.string === 'number' ? { string: n.string } : {}) }));
-    const checked = Array.isArray(e.checked) ? e.checked.filter((b): b is number => typeof b === 'number') : [];
+    const checkedAt = Array.isArray(e.checkedAt) ? e.checkedAt.filter((b): b is number => typeof b === 'number') : [];
     const nextId = typeof e.nextId === 'number' ? e.nextId : notes.reduce((m, n) => Math.max(m, n.id), 0) + 1;
-    out[part] = { notes, checked, nextId };
+    out[part] = { notes, checkedAt, nextId };
   }
   return out;
 }
