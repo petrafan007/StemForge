@@ -61,47 +61,108 @@ export interface TuningPreset {
 }
 
 export const GUITAR_TUNINGS: Record<GuitarTuningId, TuningPreset> = {
-  standard: {
-    id: 'standard',
-    label: 'Standard (E A D G B e)',
-    stringNames: ['e', 'B', 'G', 'D', 'A', 'E'],
-    openMidi: [64, 59, 55, 50, 45, 40],
-  },
-  dropD: {
-    id: 'dropD',
-    label: 'Drop D (D A D G B e)',
-    stringNames: ['e', 'B', 'G', 'D', 'A', 'D'],
-    openMidi: [64, 59, 55, 50, 45, 38],
-  },
-  halfStepDown: {
-    id: 'halfStepDown',
-    label: 'Eb Standard (Eb Ab Db Gb Bb eb)',
-    stringNames: ['eb', 'Bb', 'Gb', 'Db', 'Ab', 'Eb'],
-    openMidi: [63, 58, 54, 49, 44, 39],
-  },
+  standard: { id: 'standard', label: 'Standard (E A D G B e)', stringNames: ['e', 'B', 'G', 'D', 'A', 'E'], openMidi: [64, 59, 55, 50, 45, 40] },
+  dropD: { id: 'dropD', label: 'Drop D (D A D G B e)', stringNames: ['e', 'B', 'G', 'D', 'A', 'D'], openMidi: [64, 59, 55, 50, 45, 38] },
+  halfStepDown: { id: 'halfStepDown', label: 'Eb Standard (Eb Ab Db Gb Bb eb)', stringNames: ['eb', 'Bb', 'Gb', 'Db', 'Ab', 'Eb'], openMidi: [63, 58, 54, 49, 44, 39] },
+  dStandard: { id: 'dStandard', label: 'D Standard (D G C F A d)', stringNames: ['d', 'A', 'F', 'C', 'G', 'D'], openMidi: [62, 57, 53, 48, 43, 38] },
+  dropCSharp: { id: 'dropCSharp', label: 'Drop C# (C# G# C# F# A# d#)', stringNames: ['d#', 'A#', 'F#', 'C#', 'G#', 'C#'], openMidi: [63, 58, 54, 49, 44, 37] },
+  dropC: { id: 'dropC', label: 'Drop C (C G C F A d)', stringNames: ['d', 'A', 'F', 'C', 'G', 'C'], openMidi: [62, 57, 53, 48, 43, 36] },
+  cSharpStandard: { id: 'cSharpStandard', label: 'C# Standard (C# F# B E G# c#)', stringNames: ['c#', 'G#', 'E', 'B', 'F#', 'C#'], openMidi: [61, 56, 52, 47, 42, 37] },
+  cStandard: { id: 'cStandard', label: 'C Standard (C F Bb Eb G c)', stringNames: ['c', 'G', 'Eb', 'Bb', 'F', 'C'], openMidi: [60, 55, 51, 46, 41, 36] },
+  dropB: { id: 'dropB', label: 'Drop B (B F# B E G# c#)', stringNames: ['c#', 'G#', 'E', 'B', 'F#', 'B'], openMidi: [61, 56, 52, 47, 42, 35] },
+  bStandard: { id: 'bStandard', label: 'B Standard (B E A D F# b)', stringNames: ['b', 'F#', 'D', 'A', 'E', 'B'], openMidi: [59, 54, 50, 45, 40, 35] },
+  dropA: { id: 'dropA', label: 'Drop A (A E A D F# b)', stringNames: ['b', 'F#', 'D', 'A', 'E', 'A'], openMidi: [59, 54, 50, 45, 40, 33] },
+  seven: { id: 'seven', label: '7-String Standard (B E A D G B e)', stringNames: ['e', 'B', 'G', 'D', 'A', 'E', 'B'], openMidi: [64, 59, 55, 50, 45, 40, 35] },
+  sevenDropA: { id: 'sevenDropA', label: '7-String Drop A (A E A D G B e)', stringNames: ['e', 'B', 'G', 'D', 'A', 'E', 'A'], openMidi: [64, 59, 55, 50, 45, 40, 33] },
+  eight: { id: 'eight', label: '8-String Standard (F# B E A D G B e)', stringNames: ['e', 'B', 'G', 'D', 'A', 'E', 'B', 'F#'], openMidi: [64, 59, 55, 50, 45, 40, 35, 30] },
 };
 
 export const BASS_TUNINGS: Record<BassTuningId, TuningPreset> = {
-  standard4: {
-    id: 'standard4',
-    label: '4-String Standard (E A D G)',
-    stringNames: ['G', 'D', 'A', 'E'],
-    openMidi: [43, 38, 33, 28],
-  },
-  dropD4: {
-    id: 'dropD4',
-    label: '4-String Drop D (D A D G)',
-    stringNames: ['G', 'D', 'A', 'D'],
-    openMidi: [43, 38, 33, 26],
-  },
+  standard4: { id: 'standard4', label: '4-String Standard (E A D G)', stringNames: ['G', 'D', 'A', 'E'], openMidi: [43, 38, 33, 28] },
+  dropD4: { id: 'dropD4', label: '4-String Drop D (D A D G)', stringNames: ['G', 'D', 'A', 'D'], openMidi: [43, 38, 33, 26] },
+  halfStepDown4: { id: 'halfStepDown4', label: '4-String Eb Standard (Eb Ab Db Gb)', stringNames: ['Gb', 'Db', 'Ab', 'Eb'], openMidi: [42, 37, 32, 27] },
+  dStandard4: { id: 'dStandard4', label: '4-String D Standard (D G C F)', stringNames: ['F', 'C', 'G', 'D'], openMidi: [41, 36, 31, 26] },
+  dropC4: { id: 'dropC4', label: '4-String Drop C (C G C F)', stringNames: ['F', 'C', 'G', 'C'], openMidi: [41, 36, 31, 24] },
+  cStandard4: { id: 'cStandard4', label: '4-String C Standard (C F Bb Eb)', stringNames: ['Eb', 'Bb', 'F', 'C'], openMidi: [39, 34, 29, 24] },
+  bStandard4: { id: 'bStandard4', label: '4-String B Standard (B E A D)', stringNames: ['D', 'A', 'E', 'B'], openMidi: [38, 33, 28, 23] },
+  five: { id: 'five', label: '5-String Standard (B E A D G)', stringNames: ['G', 'D', 'A', 'E', 'B'], openMidi: [43, 38, 33, 28, 23] },
+  fiveDropA: { id: 'fiveDropA', label: '5-String Drop A (A E A D G)', stringNames: ['G', 'D', 'A', 'E', 'A'], openMidi: [43, 38, 33, 28, 21] },
 };
+
+/** How unusual a tuning is (lower = more common); used as a prior by auto-detection. */
+const TUNING_PRIOR: Record<string, number> = {
+  standard: 0,
+  dropD: 0.6,
+  halfStepDown: 0.8,
+  dStandard: 1.2,
+  dropCSharp: 1.4,
+  dropC: 1.0,
+  cSharpStandard: 1.6,
+  cStandard: 1.3,
+  dropB: 1.3,
+  bStandard: 1.4,
+  dropA: 1.8,
+  seven: 1.5,
+  sevenDropA: 2.0,
+  eight: 2.6,
+  standard4: 0,
+  dropD4: 0.6,
+  halfStepDown4: 0.8,
+  dStandard4: 1.2,
+  dropC4: 1.0,
+  cStandard4: 1.3,
+  bStandard4: 1.4,
+  five: 1.0,
+  fiveDropA: 2.0,
+};
+
+/**
+ * Picks the most plausible tuning for a set of notes: the tuning must reach the lowest notes
+ * that are actually played (duration-weighted, ignoring stray artifacts), keep the lowest
+ * open string close to the lowest played note, and prefer common tunings.
+ */
+export function detectTuning(notes: MidiNoteEvent[], candidates: TuningPreset[]): TuningPreset {
+  const fallback = candidates[0];
+  const weighted = notes
+    .filter((n) => n.durationBeats > 0.05)
+    .map((n) => ({ midi: n.midi, w: Math.min(4, n.durationBeats) * (n.velocity / 127) }))
+    .sort((a, b) => a.midi - b.midi);
+  const total = weighted.reduce((sum, n) => sum + n.w, 0);
+  if (weighted.length < 8 || total <= 0) return fallback;
+
+  // Lowest note that accounts for at least 1.5% of the playing time
+  let acc = 0;
+  let low = weighted[0].midi;
+  for (const n of weighted) {
+    acc += n.w;
+    if (acc >= total * 0.015) {
+      low = n.midi;
+      break;
+    }
+  }
+
+  let best = fallback;
+  let bestCost = Number.POSITIVE_INFINITY;
+  for (const t of candidates) {
+    const lowestOpen = Math.min(...t.openMidi);
+    const below = weighted.reduce((sum, n) => (n.midi < lowestOpen ? sum + n.w : sum), 0) / total;
+    const cost = below * 60 + Math.max(0, low - lowestOpen) * 0.35 + (TUNING_PRIOR[t.id] ?? 1.5);
+    if (cost < bestCost) {
+      bestCost = cost;
+      best = t;
+    }
+  }
+  return best;
+}
 
 export function getTuningPreset(
   instrument: StringInstrument,
   guitarTuning: GuitarTuningId = 'standard',
   bassTuning: BassTuningId = 'standard4'
 ): TuningPreset {
-  return instrument === 'guitar' ? GUITAR_TUNINGS[guitarTuning] : BASS_TUNINGS[bassTuning];
+  return instrument === 'guitar'
+    ? GUITAR_TUNINGS[guitarTuning] ?? GUITAR_TUNINGS.standard
+    : BASS_TUNINGS[bassTuning] ?? BASS_TUNINGS.standard4;
 }
 
 /**
@@ -318,13 +379,22 @@ export function detectChordFromChroma(chroma: number[]): {
         }
       }
       // Slight parsimony preference for triads over 7ths unless 7th is clearly present
-      const complexityPenalty = tpl.intervals.length === 4 ? 0.04 : 0;
+      const complexityPenalty = tpl.intervals.length === 4 ? 0.1 : 0;
       const score = inChord - complexityPenalty;
       if (score > bestScore) {
         bestScore = score;
         bestRoot = root;
         bestQuality = tpl.quality;
       }
+    }
+  }
+
+  // Power chord: strong root + fifth with (almost) no third, typical of distorted rock / metal guitar
+  if (bestQuality === 'maj' || bestQuality === 'min') {
+    const w = (pc: number) => Math.max(0, chroma[(bestRoot + pc) % 12]) / totalEnergy;
+    const third = Math.max(w(3), w(4));
+    if (third < 0.12 && w(0) > 0.18 && w(7) > 0.1) {
+      bestQuality = '5';
     }
   }
 

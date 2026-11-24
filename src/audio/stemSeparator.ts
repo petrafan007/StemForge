@@ -13,12 +13,9 @@ import {
   transcribeStemToMidi,
 } from './stemDsp';
 import { separateStereoStemsStft, type SeparatedStemsPcm } from './stftSeparator';
-import {
-  gpuNotesToMidiEvents,
-  separateViaGpuServer,
-  type GpuServerConfig,
-  type GpuTranscription,
-} from './gpuClient';
+
+/** The browser STFT engine produces these five stems. */
+type BrowserStemId = Exclude<StemId, 'lead'>;
 
 export const ACCEPTED_AUDIO_EXTENSIONS = ['.mp3', '.wav', '.flac', '.ogg', '.opus', '.m4a', '.aac', '.wma', '.aif', '.aiff'];
 export const ACCEPTED_VIDEO_EXTENSIONS = ['.mp4', '.m4v', '.mov', '.mkv', '.webm', '.avi'];
@@ -131,75 +128,56 @@ function runStftSeparation(
 
 async function buildTranscribedProject(params: {
   file: File;
-  stemBuffers: Record<StemId, AudioBuffer>;
+  stemBuffers: Record<BrowserStemId, AudioBuffer>;
   mixMono: Float32Array;
   sampleRate: number;
   duration: number;
   engineLabel: string;
-  transcription?: GpuTranscription | null;
   onProgress?: (p: SeparationProgress) => void;
 }): Promise<SongProject> {
-  const { file, stemBuffers, mixMono, sampleRate, duration, engineLabel, transcription, onProgress } =
-    params;
-  const neural = transcription?.engine === 'basic-pitch' && transcription.notes ? transcription : null;
+  const { file, stemBuffers, mixMono, sampleRate, duration, engineLabel, onProgress } = params;
 
-  onProgress?.({
-    stage: neural ? 'Loading polyphonic MIDI from Basic Pitch' : 'Transcribing Keyboards & Drums to MIDI',
-    percent: 83,
-  });
+  onProgress?.({ stage: 'Transcribing Keyboards & Drums to MIDI', percent: 83 });
   await pauseUi();
 
-  const analysisFrames = Math.min(mixMono.length, Math.floor(sampleRate * 90));
-  const bpm =
-    neural?.bpm && neural.bpm > 30 && neural.bpm < 300
-      ? neural.bpm
-      : estimateBpm(mixMono.subarray(0, analysisFrames), sampleRate);
+  // Tempo from the first 90 s; notes, drums and chords cover the whole song.
+  const bpm = estimateBpm(mixMono.subarray(0, Math.min(mixMono.length, Math.floor(sampleRate * 90))), sampleRate);
+  const analysisFrames = stemBuffers.drums.length;
 
   const keysMono = bufferToMono(stemBuffers.keyboards, analysisFrames);
   const drumsMono = bufferToMono(stemBuffers.drums, analysisFrames);
   const guitarMono = bufferToMono(stemBuffers.guitar, analysisFrames);
   const bassMono = bufferToMono(stemBuffers.bass, analysisFrames);
 
-  const keyboardMidi = neural
-    ? gpuNotesToMidiEvents(neural.notes?.keyboards, bpm, 'keys')
-    : transcribeStemToMidi(keysMono, sampleRate, bpm, {
-        minFreq: 130,
-        maxFreq: 1050,
-        channel: 0,
-        prefix: 'keys',
-      });
+  const keyboardMidi = transcribeStemToMidi(keysMono, sampleRate, bpm, {
+    minFreq: 130,
+    maxFreq: 1050,
+    channel: 0,
+    prefix: 'keys',
+  });
   const drumHits = transcribeDrumsToMidi(drumsMono, sampleRate, bpm);
 
   onProgress?.({ stage: 'Extracting Guitar & Bass Tabs, Chords & Sheet Music', percent: 93 });
   await pauseUi();
 
-  let guitarNotes;
-  let bassNotes;
-  let vocalNotes;
-  if (neural) {
-    guitarNotes = gpuNotesToMidiEvents(neural.notes?.guitar, bpm, 'gtr');
-    bassNotes = gpuNotesToMidiEvents(neural.notes?.bass, bpm, 'bass');
-    vocalNotes = gpuNotesToMidiEvents(neural.notes?.vocals, bpm, 'vox');
-  } else {
-    guitarNotes = transcribeStemToMidi(guitarMono, sampleRate, bpm, {
-      minFreq: 82,
-      maxFreq: 880,
-      channel: 0,
-      prefix: 'gtr',
-    });
-    bassNotes = transcribeStemToMidi(bassMono, sampleRate, bpm, {
-      minFreq: 41,
-      maxFreq: 260,
-      channel: 0,
-      prefix: 'bass',
-    });
-    vocalNotes = transcribeStemToMidi(bufferToMono(stemBuffers.vocals, analysisFrames), sampleRate, bpm, {
-      minFreq: 80,
-      maxFreq: 1000,
-      channel: 0,
-      prefix: 'vox',
-    });
-  }
+  const guitarNotes = transcribeStemToMidi(guitarMono, sampleRate, bpm, {
+    minFreq: 82,
+    maxFreq: 880,
+    channel: 0,
+    prefix: 'gtr',
+  });
+  const bassNotes = transcribeStemToMidi(bassMono, sampleRate, bpm, {
+    minFreq: 41,
+    maxFreq: 260,
+    channel: 0,
+    prefix: 'bass',
+  });
+  const vocalNotes = transcribeStemToMidi(bufferToMono(stemBuffers.vocals, analysisFrames), sampleRate, bpm, {
+    minFreq: 80,
+    maxFreq: 1000,
+    channel: 0,
+    prefix: 'vox',
+  });
 
   const chordLen = Math.min(guitarMono.length, keysMono.length, bassMono.length);
   const harmonicForChords = new Float32Array(chordLen);
@@ -212,8 +190,8 @@ async function buildTranscribedProject(params: {
   const detectedMode: 'major' | 'minor' =
     chords[0]?.quality === 'min' || chords[0]?.quality === 'm7' ? 'minor' : 'major';
 
-  const stemIds: StemId[] = ['vocals', 'guitar', 'bass', 'drums', 'keyboards'];
-  const stems = {} as Record<StemId, StemTrackData>;
+  const stemIds: BrowserStemId[] = ['vocals', 'guitar', 'bass', 'drums', 'keyboards'];
+  const stems: Partial<Record<StemId, StemTrackData>> = {};
 
   for (const id of stemIds) {
     const buf = stemBuffers[id];
@@ -237,6 +215,7 @@ async function buildTranscribedProject(params: {
     fileFormat: detectFormatLabel(file.name),
     duration,
     bpm,
+    beatOffsetSec: 0,
     timeSignature: [4, 4],
     keyRootPc: detectedRoot,
     keyMode: detectedMode,
@@ -244,10 +223,12 @@ async function buildTranscribedProject(params: {
     keyboardMidi,
     drumHits,
     guitarNotes,
+    leadNotes: [],
     bassNotes,
     vocalNotes,
     chords,
-    transcriptionEngine: neural ? 'basic-pitch' : 'yin',
+    transcriptionEngine: 'yin',
+    drumEngine: 'browser',
   };
 }
 
@@ -259,58 +240,12 @@ async function buildTranscribedProject(params: {
 export async function processUploadedAudioFile(
   file: File,
   audioCtx: AudioContext,
-  onProgress?: (p: SeparationProgress) => void,
-  gpuConfig?: GpuServerConfig
+  onProgress?: (p: SeparationProgress) => void
 ): Promise<SongProject> {
   if (!isSupportedAudioFile(file)) {
     throw new Error(
       `Unsupported file "${file.name}". Please upload audio (MP3, WAV, FLAC, OGG, M4A, AAC) or video (MP4, MOV, MKV, WEBM).`
     );
-  }
-
-  // PATH A: Local NVIDIA GPU Neural Separation (Meta htdemucs_6s)
-  if (gpuConfig?.mode === 'gpu') {
-    const { meta, wavBytes } = await separateViaGpuServer(
-      file,
-      gpuConfig.serverUrl,
-      gpuConfig.pianoOnly,
-      (stage, percent) => onProgress?.({ stage, percent })
-    );
-
-    onProgress?.({ stage: 'Decoding 5 neural WAV stems in Web Audio', percent: 76 });
-    await pauseUi();
-
-    const stemIds: StemId[] = ['vocals', 'guitar', 'bass', 'drums', 'keyboards'];
-    const decodedPairs = await Promise.all(
-      stemIds.map(async (id) => {
-        const buf = await audioCtx.decodeAudioData(wavBytes[id].slice(0));
-        return [id, buf] as const;
-      })
-    );
-    const stemBuffers = Object.fromEntries(decodedPairs) as Record<StemId, AudioBuffer>;
-
-    const refBuf = stemBuffers.drums;
-    const sr = refBuf.sampleRate;
-    const analysisFrames = Math.min(refBuf.length, Math.floor(sr * 90));
-    const mixMono = new Float32Array(analysisFrames);
-    for (const id of stemIds) {
-      const m = bufferToMono(stemBuffers[id], analysisFrames);
-      for (let i = 0; i < m.length; i++) {
-        mixMono[i] += m[i];
-      }
-    }
-
-    const gpuShort = meta.gpu.replace(/^NVIDIA\s+GeForce\s+/i, '');
-    return buildTranscribedProject({
-      file,
-      stemBuffers,
-      mixMono,
-      sampleRate: sr,
-      duration: refBuf.duration,
-      engineLabel: `${gpuShort} (${meta.model} · ${meta.elapsed_sec}s)`,
-      transcription: meta.transcription,
-      onProgress,
-    });
   }
 
   // PATH B: Browser-local STFT + 2D Median HPSS + Wiener Masking (No setup required)
@@ -324,7 +259,7 @@ export async function processUploadedAudioFile(
   } catch {
     throw new Error(
       isVideoFile(file)
-        ? `Your browser could not read the audio in "${file.name}". Switch to the Local GPU engine (it uses FFmpeg to read any video).`
+        ? `Your browser could not read the audio in "${file.name}". Switch to the Local GPU engine in Settings (it uses FFmpeg to read any video).`
         : `Could not decode "${file.name}". Ensure the file is a valid MP3, WAV, FLAC, OGG, or M4A recording.`
     );
   }
@@ -367,8 +302,8 @@ export async function processUploadedAudioFile(
     });
   });
 
-  const stemIds: StemId[] = ['vocals', 'guitar', 'bass', 'drums', 'keyboards'];
-  const stemBuffers = {} as Record<StemId, AudioBuffer>;
+  const stemIds: BrowserStemId[] = ['vocals', 'guitar', 'bass', 'drums', 'keyboards'];
+  const stemBuffers = {} as Record<BrowserStemId, AudioBuffer>;
   for (const id of stemIds) {
     stemBuffers[id] = makeStereoBuffer(audioCtx, separated[id][0], separated[id][1], sr);
   }

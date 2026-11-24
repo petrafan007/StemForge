@@ -1,6 +1,7 @@
-import { Pause, Play, Repeat, Square, Timer, Minus, Plus } from 'lucide-react';
+import { Loader2, Pause, Play, Repeat, Square, Timer, Minus, Plus } from 'lucide-react';
 import type { SongProject } from '../types/music';
 import { formatKeySignature } from '../audio/notationEngine';
+import { quarterBeatsPerMeasure, timeToBeat } from '../audio/timeline';
 import { formatTimecode } from '../utils/download';
 
 interface TransportBarProps {
@@ -18,6 +19,11 @@ interface TransportBarProps {
   onToggleMetronome: () => void;
   onChangeRate: (rate: number) => void;
   onChangeTranspose: (semitones: number) => void;
+  /** True while pitch-shifted stems are being prepared for a key change. */
+  transposePending?: boolean;
+  /** 'varispeed' = key and speed change together (demo / browser songs). */
+  pitchMode?: 'buffers' | 'varispeed';
+  onEditSong?: () => void;
 }
 
 const SPEED_OPTIONS = [0.75, 0.85, 1.0, 1.15, 1.25];
@@ -37,12 +43,17 @@ export function TransportBar({
   onToggleMetronome,
   onChangeRate,
   onChangeTranspose,
+  transposePending,
+  pitchMode,
+  onEditSong,
 }: TransportBarProps) {
-  const effectiveBpm = Math.round(project.bpm * playbackRate);
+  const varispeed = pitchMode === 'varispeed' ? 2 ** (transpose / 12) : 1;
+  const effectiveBpm = Math.round(project.bpm * playbackRate * varispeed);
   const keyLabel = formatKeySignature(project.keyRootPc, project.keyMode, transpose);
-  const currentBeat = Math.floor((currentTime / 60) * project.bpm);
-  const barNumber = Math.floor(currentBeat / project.timeSignature[0]) + 1;
-  const beatInBar = (currentBeat % project.timeSignature[0]) + 1;
+  const perBar = Math.max(1, Math.round(quarterBeatsPerMeasure(project.timeSignature)));
+  const currentBeat = Math.max(0, Math.floor(timeToBeat(project, currentTime)));
+  const barNumber = Math.floor(currentBeat / perBar) + 1;
+  const beatInBar = (currentBeat % perBar) + 1;
   const progressPct = project.duration > 0 ? Math.min(100, (currentTime / project.duration) * 100) : 0;
 
   return (
@@ -63,7 +74,18 @@ export function TransportBar({
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs font-mono tabular-nums text-slate-400">
-              <span className="text-slate-200">{effectiveBpm} BPM</span>
+              {onEditSong ? (
+                <button
+                  type="button"
+                  onClick={onEditSong}
+                  title="Edit tempo, beat grid, time signature and key"
+                  className="text-slate-200 hover:text-amber-300 underline decoration-dotted underline-offset-4 cursor-pointer"
+                >
+                  {effectiveBpm} BPM
+                </button>
+              ) : (
+                <span className="text-slate-200">{effectiveBpm} BPM</span>
+              )}
               <span aria-hidden="true">·</span>
               <span className="text-slate-200">{keyLabel}</span>
               <span aria-hidden="true">·</span>
@@ -143,20 +165,33 @@ export function TransportBar({
               <span className="text-xs text-slate-400 mr-0.5">Key</span>
               <button
                 type="button"
-                onClick={() => onChangeTranspose(Math.max(-6, transpose - 1))}
-                disabled={transpose <= -6}
+                onClick={() => onChangeTranspose(Math.max(-12, transpose - 1))}
+                disabled={transpose <= -12}
                 aria-label="Transpose down one semitone"
                 className="w-7 h-7 inline-flex items-center justify-center rounded bg-[#1B1F27] border border-white/[0.08] text-slate-300 hover:text-white disabled:opacity-40 cursor-pointer"
               >
                 <Minus className="w-3.5 h-3.5" aria-hidden="true" />
               </button>
-              <span className="w-8 text-center font-mono text-xs tabular-nums text-slate-200">
-                {transpose > 0 ? `+${transpose}` : transpose}
+              <span
+                className="w-8 text-center font-mono text-xs tabular-nums text-slate-200 inline-flex items-center justify-center"
+                title={
+                  pitchMode === 'varispeed'
+                    ? 'Key change also changes speed for this song (exports keep the tempo).'
+                    : 'True pitch shift: the tempo stays the same.'
+                }
+              >
+                {transposePending ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" aria-label="Preparing key change" />
+                ) : transpose > 0 ? (
+                  `+${transpose}`
+                ) : (
+                  transpose
+                )}
               </span>
               <button
                 type="button"
-                onClick={() => onChangeTranspose(Math.min(6, transpose + 1))}
-                disabled={transpose >= 6}
+                onClick={() => onChangeTranspose(Math.min(12, transpose + 1))}
+                disabled={transpose >= 12}
                 aria-label="Transpose up one semitone"
                 className="w-7 h-7 inline-flex items-center justify-center rounded bg-[#1B1F27] border border-white/[0.08] text-slate-300 hover:text-white disabled:opacity-40 cursor-pointer"
               >

@@ -33,7 +33,11 @@ export interface MusicXmlScoreInput {
   bpm: number;
   keyRootPc: number;
   keyMode: 'major' | 'minor';
+  /** Defaults to 4/4. */
+  timeSignature?: [number, number];
+  /** @deprecated use timeSignature */
   beatsPerMeasure?: number;
+  accidentals?: 'auto' | 'sharps' | 'flats';
   parts: MusicXmlPartInput[];
 }
 
@@ -306,10 +310,10 @@ function planPart(part: MusicXmlPartInput): StaffPlan[] {
 }
 
 export function encodeMusicXml(score: MusicXmlScoreInput): string {
-  const beatsPerMeasure = score.beatsPerMeasure ?? 4;
-  const mLen = beatsPerMeasure * DIVISIONS;
+  const [tsNum, tsDen] = score.timeSignature ?? [score.beatsPerMeasure ?? 4, 4];
+  const mLen = Math.max(1, Math.round((tsNum * 4 * DIVISIONS) / (tsDen || 4)));
   const fifths = keyToFifths(score.keyRootPc, score.keyMode);
-  const useFlats = fifths < 0;
+  const useFlats = score.accidentals === 'flats' ? true : score.accidentals === 'sharps' ? false : fifths < 0;
   const bpm = Math.round(Math.max(20, Math.min(300, score.bpm || 120)));
 
   const plans = score.parts.map((p) => ({ part: p, staves: planPart(p) }));
@@ -349,7 +353,7 @@ export function encodeMusicXml(score: MusicXmlScoreInput): string {
             ? '<transpose><diatonic>0</diatonic><chromatic>0</chromatic><octave-change>-1</octave-change></transpose>'
             : '';
           body.push(
-            `<attributes><divisions>${DIVISIONS}</divisions><key><fifths>${fifths}</fifths><mode>${score.keyMode}</mode></key><time><beats>${beatsPerMeasure}</beats><beat-type>4</beat-type></time>${stavesXml}${clefs}${details}${transpose}</attributes>`
+            `<attributes><divisions>${DIVISIONS}</divisions><key><fifths>${fifths}</fifths><mode>${score.keyMode}</mode></key><time><beats>${tsNum}</beats><beat-type>${tsDen}</beat-type></time>${stavesXml}${clefs}${details}${transpose}</attributes>`
           );
           if (partIdx === 0) {
             body.push(

@@ -22,7 +22,9 @@ import {
   midiToNoteName,
   type ChordVoicing,
 } from '../audio/notationEngine';
-import { encodeMusicXml, type MusicXmlPartInput } from '../audio/musicXml';
+import { buildMusicXml, partLabel, partNotes, resolveTunings, type TuningOptions } from '../audio/scoreExport';
+import { beatToTime, quarterBeatsPerMeasure, timeToBeat } from '../audio/timeline';
+import type { NotationPart } from '../types/music';
 import { slugifyFilename, triggerTextDownload } from '../utils/download';
 
 interface NotationViewProps {
@@ -32,6 +34,16 @@ interface NotationViewProps {
   onSeek: (timeSec: number) => void;
   onPreviewNote: (midi: number, durationSec?: number) => void;
   onPreviewChord: (midis: number[]) => void;
+  part: NotationPart;
+  onChangePart: (part: NotationPart) => void;
+  guitarTuning: GuitarTuningId | 'auto';
+  bassTuning: BassTuningId | 'auto';
+  onChangeGuitarTuning: (t: GuitarTuningId | 'auto') => void;
+  onChangeBassTuning: (t: BassTuningId | 'auto') => void;
+  tuningOptions: TuningOptions;
+  maxFret: number;
+  accidentals: 'auto' | 'sharps' | 'flats';
+  onOpenExport?: () => void;
 }
 
 function ChordFretboardDiagram({
@@ -185,24 +197,35 @@ export function NotationView({
   onSeek,
   onPreviewNote,
   onPreviewChord,
+  part: requestedPart,
+  onChangePart,
+  guitarTuning,
+  bassTuning,
+  onChangeGuitarTuning,
+  onChangeBassTuning,
+  tuningOptions,
+  maxFret,
+  accidentals,
+  onOpenExport,
 }: NotationViewProps) {
-  const [instrument, setInstrument] = useState<StringInstrument>('guitar');
+  const part: NotationPart = requestedPart === 'lead' && !project.stems.lead ? 'guitar' : requestedPart;
+  const instrument: StringInstrument = part === 'bass' ? 'bass' : 'guitar';
   const [mode, setMode] = useState<NotationMode>('tabs');
-  const [guitarTuning, setGuitarTuning] = useState<GuitarTuningId>('standard');
-  const [bassTuning, setBassTuning] = useState<BassTuningId>('standard4');
   const [copiedTab, setCopiedTab] = useState(false);
   const sheetSvgRef = useRef<SVGSVGElement | null>(null);
 
-  const tuning = useMemo(
-    () => getTuningPreset(instrument, guitarTuning, bassTuning),
-    [instrument, guitarTuning, bassTuning]
+  const resolved = useMemo(
+    () => resolveTunings(project, { guitar: guitarTuning, bass: bassTuning }, tuningOptions, transpose),
+    [project, guitarTuning, bassTuning, tuningOptions, transpose]
   );
+  const tuning = instrument === 'bass' ? resolved.bass : resolved.guitar;
+  const partName = partLabel(project, part);
 
-  const rawNotes = instrument === 'guitar' ? project.guitarNotes : project.bassNotes;
+  const rawNotes = partNotes(project, part);
 
   const tabNotes: TabNoteEvent[] = useMemo(
-    () => mapNotesToTab(rawNotes, tuning, transpose),
-    [rawNotes, tuning, transpose]
+    () => mapNotesToTab(rawNotes, tuning, transpose, maxFret),
+    [rawNotes, tuning, transpose, maxFret]
   );
 
   const transposedChords = useMemo(
@@ -228,9 +251,9 @@ export function NotationView({
     return list;
   }, [transposedChords, instrument, transpose]);
 
-  const currentBeat = (currentTime * project.bpm) / 60;
-  const beatsPerMeasure = project.timeSignature[0] || 4;
-  const totalBeats = Math.max(beatsPerMeasure * 2, Math.ceil((project.duration * project.bpm) / 60));
+  const currentBeat = timeToBeat(project, currentTime);
+  const beatsPerMeasure = quarterBeatsPerMeasure(project.timeSignature);
+  const totalBeats = Math.max(beatsPerMeasure * 2, Math.ceil(timeToBeat(project, project.duration)));
   const totalMeasures = Math.ceil(totalBeats / beatsPerMeasure);
 
   const activeChord = transposedChords.find(
@@ -238,7 +261,7 @@ export function NotationView({
   );
 
   const handleCopyAsciiTab = async () => {
-    const ascii = generateAsciiTab(tabNotes, tuning, `${project.title} (${instrument})`, project.bpm);
+    const ascii = generateAsciiTab(tabNotes, tuning, `${project.title} (${partName})`, project.bpm, Math.round(beatsPerMeasure));
     try {
       await navigator.clipboard.writeText(ascii);
     } catch {
@@ -249,8 +272,8 @@ export function NotationView({
   };
 
   const handleDownloadTab = () => {
-    const ascii = generateAsciiTab(tabNotes, tuning, `${project.title} (${instrument})`, project.bpm);
-    triggerTextDownload(ascii, `${slugifyFilename(project.title)}_${instrument}_tab.txt`);
+    const ascii = generateAsciiTab(tabNotes, tuning, `${project.title} (${partName})`, project.bpm, Math.round(beatsPerMeasure));
+    triggerTextDownload(ascii, `${slugifyFilename(project.title)}_${part}_tab.txt`);
   };
 
   const handleDownloadSheetSvg = () => {
@@ -258,7 +281,7 @@ export function NotationView({
     const svgXml = new XMLSerializer().serializeToString(sheetSvgRef.current);
     triggerTextDownload(
       svgXml,
-      `${slugifyFilename(project.title)}_${instrument}_sheet.svg`,
+      `${slugifyFilename(project.title)}_${part}_sheet.svg`,
       'image/svg+xml;charset=utf-8'
     );
   };
@@ -269,65 +292,15 @@ export function NotationView({
    * 'score' = full band score: Vocals, Guitar (+TAB), Bass (+TAB), Keyboards (grand staff).
    */
   const handleDownloadMusicXml = (scope: 'instrument' | 'score') => {
-    const shift = (list: MidiNoteEvent[], lo: number, hi: number) =>
-      list.map((n) => ({ ...n, midi: Math.max(lo, Math.min(hi, n.midi + transpose)) }));
-    const gTuning = GUITAR_TUNINGS[guitarTuning];
-    const bTuning = BASS_TUNINGS[bassTuning];
-    const guitarPart: MusicXmlPartInput = {
-      id: 'P2',
-      name: `Guitar (${gTuning.label.split(' (')[0]})`,
-      abbreviation: 'Gtr.',
-      clef: 'guitar',
-      octaveDown: true,
-      tab: { tuning: gTuning, notes: mapNotesToTab(project.guitarNotes, gTuning, transpose) },
-      midiProgram: 25,
-      midiChannel: 1,
-    };
-    const bassPart: MusicXmlPartInput = {
-      id: 'P3',
-      name: 'Bass',
-      abbreviation: 'Bass',
-      clef: 'bass',
-      octaveDown: true,
-      tab: { tuning: bTuning, notes: mapNotesToTab(project.bassNotes, bTuning, transpose) },
-      midiProgram: 33,
-      midiChannel: 2,
-    };
-    const parts: MusicXmlPartInput[] =
-      scope === 'instrument'
-        ? [instrument === 'guitar' ? { ...guitarPart, id: 'P1' } : { ...bassPart, id: 'P1' }]
-        : [
-            {
-              id: 'P1',
-              name: 'Vocals',
-              abbreviation: 'Vox.',
-              clef: 'treble',
-              notes: shift(project.vocalNotes ?? [], 36, 96),
-              midiProgram: 52,
-              midiChannel: 3,
-            },
-            guitarPart,
-            bassPart,
-            {
-              id: 'P4',
-              name: 'Keyboards',
-              abbreviation: 'Keys',
-              clef: 'grand',
-              notes: shift(project.keyboardMidi, 21, 108),
-              midiProgram: 0,
-              midiChannel: 0,
-            },
-          ];
-    const xml = encodeMusicXml({
-      title: project.title,
-      subtitle: 'Transcribed with StemForge',
-      bpm: project.bpm,
-      keyRootPc: (((project.keyRootPc + transpose) % 12) + 12) % 12,
-      keyMode: project.keyMode,
-      beatsPerMeasure,
-      parts,
+    const xml = buildMusicXml(project, {
+      parts: scope === 'instrument' ? [part] : ['vocals', 'guitar', 'lead', 'bass', 'keyboards'],
+      includeTab: true,
+      transpose,
+      tunings: resolved,
+      maxFret,
+      accidentals,
     });
-    const suffix = scope === 'instrument' ? instrument : 'full_score';
+    const suffix = scope === 'instrument' ? part : 'full_score';
     triggerTextDownload(
       xml,
       `${slugifyFilename(project.title)}_${suffix}.musicxml`,
@@ -365,36 +338,31 @@ export function NotationView({
       {/* Top Workspace Control Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
-          {/* Instrument Switcher: Guitar vs Bass */}
+          {/* Part switcher: Guitar / Lead Guitar / Bass */}
           <div
             role="group"
-            aria-label="String instrument selector"
+            aria-label="Part selector"
             className="inline-flex items-center p-1 bg-[#13161C] border border-white/[0.08] rounded-md"
           >
-            <button
-              type="button"
-              aria-pressed={instrument === 'guitar'}
-              onClick={() => setInstrument('guitar')}
-              className={`px-3.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                instrument === 'guitar'
-                  ? 'bg-amber-500 text-[#0B0D10] font-semibold'
-                  : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              Guitar (6-String)
-            </button>
-            <button
-              type="button"
-              aria-pressed={instrument === 'bass'}
-              onClick={() => setInstrument('bass')}
-              className={`px-3.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                instrument === 'bass'
-                  ? 'bg-sky-400 text-[#0B0D10] font-semibold'
-                  : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              Bass (4-String)
-            </button>
+            {(['guitar', 'lead', 'bass'] as NotationPart[])
+              .filter((p) => p !== 'lead' || Boolean(project.stems.lead))
+              .map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  aria-pressed={part === p}
+                  onClick={() => onChangePart(p)}
+                  className={`px-3.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    part === p
+                      ? p === 'bass'
+                        ? 'bg-sky-400 text-[#0B0D10] font-semibold'
+                        : 'bg-amber-500 text-[#0B0D10] font-semibold'
+                      : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  {partLabel(project, p)} ({(p === 'bass' ? resolved.bass : resolved.guitar).openMidi.length}-String)
+                </button>
+              ))}
           </div>
 
           {/* Notation Mode Switcher: Tabs / Chords / Sheet Music */}
@@ -427,17 +395,20 @@ export function NotationView({
             ))}
           </div>
 
-          {/* Tuning selector for Tablature */}
-          {mode === 'tabs' && (
+          {/* Tuning selector (Auto = detected from the notes) */}
+          {(mode === 'tabs' || mode === 'sheet') && (
             <label className="flex items-center gap-1.5 text-xs text-slate-400">
               <span>Tuning</span>
               {instrument === 'guitar' ? (
                 <select
                   aria-label="Guitar tuning"
                   value={guitarTuning}
-                  onChange={(e) => setGuitarTuning(e.target.value as GuitarTuningId)}
+                  onChange={(e) => onChangeGuitarTuning(e.target.value as GuitarTuningId | 'auto')}
                   className="h-8 px-2.5 rounded bg-[#13161C] border border-white/[0.08] text-xs font-mono text-slate-200 cursor-pointer"
                 >
+                  <option value="auto" className="bg-[#13161C]">
+                    Auto — detected {resolved.detectedGuitar.label}
+                  </option>
                   {Object.values(GUITAR_TUNINGS).map((t) => (
                     <option key={t.id} value={t.id} className="bg-[#13161C]">
                       {t.label}
@@ -448,9 +419,12 @@ export function NotationView({
                 <select
                   aria-label="Bass tuning"
                   value={bassTuning}
-                  onChange={(e) => setBassTuning(e.target.value as BassTuningId)}
+                  onChange={(e) => onChangeBassTuning(e.target.value as BassTuningId | 'auto')}
                   className="h-8 px-2.5 rounded bg-[#13161C] border border-white/[0.08] text-xs font-mono text-slate-200 cursor-pointer"
                 >
+                  <option value="auto" className="bg-[#13161C]">
+                    Auto — detected {resolved.detectedBass.label}
+                  </option>
                   {Object.values(BASS_TUNINGS).map((t) => (
                     <option key={t.id} value={t.id} className="bg-[#13161C]">
                       {t.label}
@@ -473,7 +447,7 @@ export function NotationView({
                 className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <FileMusic className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{instrument === 'guitar' ? 'Guitar' : 'Bass'} MusicXML</span>
+                <span>{partName} MusicXML</span>
               </button>
               <button
                 type="button"
@@ -484,6 +458,15 @@ export function NotationView({
                 <FileMusic className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>Full Score MusicXML</span>
               </button>
+              {onOpenExport && (
+                <button
+                  type="button"
+                  onClick={onOpenExport}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  More export options…
+                </button>
+              )}
             </>
           )}
           {mode === 'tabs' && (
@@ -538,7 +521,7 @@ export function NotationView({
           <div className="px-4 py-2.5 border-b border-white/[0.06] flex flex-wrap items-center justify-between gap-2 text-xs">
             <div className="flex items-center gap-2">
               <span className="font-semibold text-white">
-                {instrument === 'guitar' ? 'Guitar Tablature' : 'Bass Tablature'}
+                {partName} Tablature
               </span>
               <span className="text-slate-600" aria-hidden="true">
                 ·
@@ -552,7 +535,7 @@ export function NotationView({
 
           {tabNotes.length === 0 ? (
             <div className="p-10 text-center text-sm text-slate-400">
-              No pitched notes detected on the {instrument} stem for this audio file.
+              No pitched notes detected on the {partName.toLowerCase()} stem for this audio file.
             </div>
           ) : (
             <div className="p-4 sm:p-6 flex flex-col gap-6 overflow-x-auto studio-scroll">
@@ -599,7 +582,7 @@ export function NotationView({
                           onClick={(e) => {
                             const rect = e.currentTarget.getBoundingClientRect();
                             const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-                            onSeek(((mStartBeat + frac * beatsPerMeasure) * 60) / project.bpm);
+                            onSeek(beatToTime(project, mStartBeat + frac * beatsPerMeasure));
                           }}
                           className="relative border-r border-white/20 cursor-pointer hover:bg-white/[0.015]"
                         >
@@ -638,7 +621,7 @@ export function NotationView({
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onPreviewNote(note.midi, 0.4);
-                                    onSeek((note.startBeat * 60) / project.bpm);
+                                    onSeek(beatToTime(project, note.startBeat));
                                   }}
                                   title={`${midiToNoteName(note.midi)} · String ${tuning.stringNames[note.stringIndex]} · Fret ${note.fret}`}
                                   aria-label={`Fret ${note.fret} on string ${tuning.stringNames[note.stringIndex]} at measure ${m + 1}`}
@@ -714,7 +697,7 @@ export function NotationView({
                     key={chord.id}
                     type="button"
                     onClick={() => {
-                      onSeek((chord.startBeat * 60) / project.bpm);
+                      onSeek(beatToTime(project, chord.startBeat));
                       auditionChord(chord.rootPc, chord.quality);
                     }}
                     className={`p-3 rounded-md border text-left transition-colors cursor-pointer ${
@@ -807,7 +790,7 @@ export function NotationView({
                 fontWeight={700}
                 fontFamily="Plus Jakarta Sans, sans-serif"
               >
-                {project.title} — {instrument === 'guitar' ? 'Guitar' : 'Bass'} Score
+                {project.title} — {partName} Score
               </text>
 
               {Array.from({ length: staffLinesCount }).map((_, sysIdx) => {
@@ -958,7 +941,7 @@ export function NotationView({
                                 className="cursor-pointer"
                                 onClick={() => {
                                   onPreviewNote(note.midi, 0.4);
-                                  onSeek((note.startBeat * 60) / project.bpm);
+                                  onSeek(beatToTime(project, note.startBeat));
                                 }}
                               >
                                 {ledgers.map((ly, idx) => (

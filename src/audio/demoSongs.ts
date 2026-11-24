@@ -604,7 +604,7 @@ export function buildDemoSongProject(
   const totalBeats = blueprint.bars * 4;
   const duration = (totalBeats * 60) / blueprint.bpm;
 
-  const buffers: Record<StemId, AudioBuffer> = {
+  const buffers: Partial<Record<StemId, AudioBuffer>> = {
     vocals: renderMelodicBuffer(ctx, blueprint.vocals, duration, blueprint.bpm, 'vocals'),
     guitar: renderMelodicBuffer(ctx, blueprint.guitar, duration, blueprint.bpm, 'guitar'),
     bass: renderMelodicBuffer(ctx, blueprint.bass, duration, blueprint.bpm, 'bass'),
@@ -612,12 +612,13 @@ export function buildDemoSongProject(
     keyboards: renderMelodicBuffer(ctx, blueprint.keyboards, duration, blueprint.bpm, 'keyboards'),
   };
 
-  const stems = {} as Record<StemId, StemTrackData>;
+  const stems: Partial<Record<StemId, StemTrackData>> = {};
   (Object.keys(buffers) as StemId[]).forEach((id) => {
-    const ch = buffers[id].getChannelData(0);
+    const buf = buffers[id]!;
+    const ch = buf.getChannelData(0);
     stems[id] = {
       id,
-      buffer: buffers[id],
+      buffer: buf,
       peaks: computeWaveformPeaks(ch, 180),
       rmsLevel: computeRms(ch),
     };
@@ -662,6 +663,7 @@ export function buildDemoSongProject(
     fileFormat: 'Studio Multi-Stem',
     duration,
     bpm: blueprint.bpm,
+    beatOffsetSec: 0,
     timeSignature: [4, 4],
     keyRootPc: blueprint.keyRootPc,
     keyMode: blueprint.keyMode,
@@ -669,9 +671,11 @@ export function buildDemoSongProject(
     keyboardMidi: toMidi(blueprint.keyboards, 'keys'),
     drumHits,
     guitarNotes: toMidi(blueprint.guitar, 'gtr'),
+    leadNotes: [],
     bassNotes: toMidi(blueprint.bass, 'bass'),
     vocalNotes: toMidi(blueprint.vocals, 'vox'),
     chords,
     transcriptionEngine: 'demo',
+    drumEngine: 'demo',
   };
 }

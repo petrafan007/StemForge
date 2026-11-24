@@ -31,13 +31,24 @@ function asciiBytes(str: string): number[] {
   return Array.from(str).map((c) => c.charCodeAt(0) & 0x7f);
 }
 
+/** Grid size in quarter-note beats (0 = no quantization). */
 export function quantizeStepBeats(grid: QuantizeGrid): number {
   switch (grid) {
+    case 'off':
+      return 0;
     case '1/4':
       return 1;
     case '1/8':
       return 0.5;
     case '1/16':
+      return 0.25;
+    case '1/32':
+      return 0.125;
+    case '1/8T':
+      return 1 / 3;
+    case '1/16T':
+      return 1 / 6;
+    default:
       return 0.25;
   }
 }
@@ -48,13 +59,13 @@ export function quantizeMidiNotes(
   minVelocity = 1
 ): MidiNoteEvent[] {
   const step = quantizeStepBeats(grid);
-  return notes
-    .filter((n) => n.velocity >= minVelocity)
-    .map((n) => ({
-      ...n,
-      startBeat: Math.max(0, Math.round(n.startBeat / step) * step),
-      durationBeats: Math.max(step, Math.round(n.durationBeats / step) * step),
-    }));
+  const kept = notes.filter((n) => n.velocity >= minVelocity);
+  if (step <= 0) return kept;
+  return kept.map((n) => ({
+    ...n,
+    startBeat: Math.max(0, Math.round(n.startBeat / step) * step),
+    durationBeats: Math.max(step, Math.round(n.durationBeats / step) * step),
+  }));
 }
 
 export function quantizeDrumHits(
@@ -68,7 +79,7 @@ export function quantizeDrumHits(
 
   for (const hit of hits) {
     if (hit.velocity < minVelocity) continue;
-    const quantizedBeat = Math.max(0, Math.round(hit.startBeat / step) * step);
+    const quantizedBeat = step > 0 ? Math.max(0, Math.round(hit.startBeat / step) * step) : Math.max(0, hit.startBeat);
     const dedupeKey = `${hit.midi}@${quantizedBeat.toFixed(3)}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
@@ -126,6 +137,8 @@ export function encodeMidiFile(options: {
   timeSignature?: [number, number];
   ticksPerQuarter?: number;
   tracks: MidiTrackInput[];
+  /** 1 = one track per instrument (default), 0 = everything merged into a single track. */
+  format?: 0 | 1;
 }): Uint8Array {
   const ppq = options.ticksPerQuarter ?? 480;
   const bpm = Math.max(30, Math.min(300, options.bpm || 120));
@@ -153,7 +166,11 @@ export function encodeMidiFile(options: {
     },
   ];
 
-  const chunks: number[][] = [buildTrackChunk('Tempo Map', tempoEvents)];
+  const chunks: number[][] = [];
+  const merged: RawMidiEvent[] = [...tempoEvents];
+  if (options.format !== 0) {
+    chunks.push(buildTrackChunk('Tempo Map', tempoEvents));
+  }
 
   for (const track of options.tracks) {
     const rawEvents: RawMidiEvent[] = [];
@@ -184,14 +201,25 @@ export function encodeMidiFile(options: {
         ? { channel: primaryChannel, program: track.program }
         : undefined;
 
-    chunks.push(buildTrackChunk(track.name, rawEvents, includeProgram));
+    if (options.format === 0) {
+      if (includeProgram) {
+        merged.push({ tick: 0, order: 0, bytes: [0xc0 | (includeProgram.channel & 0x0f), includeProgram.program & 0x7f] });
+      }
+      merged.push(...rawEvents);
+    } else {
+      chunks.push(buildTrackChunk(track.name, rawEvents, includeProgram));
+    }
+  }
+
+  if (options.format === 0) {
+    chunks.push(buildTrackChunk(options.tracks.map((t) => t.name).join(' + ') || 'StemForge', merged));
   }
 
   // MThd header: Format 1, N tracks, PPQ
   const header = [
     ...asciiBytes('MThd'),
     ...uint32Be(6),
-    ...uint16Be(1),
+    ...uint16Be(options.format === 0 ? 0 : 1),
     ...uint16Be(chunks.length),
     ...uint16Be(ppq),
   ];

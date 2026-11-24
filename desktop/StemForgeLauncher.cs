@@ -5,7 +5,11 @@
 //   2. Starts the local GPU server (local-gpu-server\.venv) hidden, unless it is already running.
 //      The server also serves the built web app at http://127.0.0.1:8000.
 //   3. Opens StemForge in its own app window (Microsoft Edge or Chrome "--app" mode).
-//   4. When you close that window, stops the GPU server it started (freeing VRAM).
+//   4. When you close that window, stops the GPU server it started (freeing VRAM), unless
+//      Settings -> Desktop App -> "Keep the GPU engine running" is on.
+//
+// Double-clicking a .sfg project in Explorer runs "StemForge.exe <file.sfg>": the project is
+// imported into the library and opened.
 //
 // Written for the C# 5 compiler that ships with Windows (.NET Framework 4.x csc.exe).
 
@@ -15,6 +19,7 @@ using System.Drawing;
 using System.IO;
 using System.Management;
 using System.Net;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -31,15 +36,25 @@ namespace StemForge
         private static string _profileDir;
         private static Process _server;
         private static StreamWriter _log;
+        private static string _launcherLogPath;
+        private static string _openSfg;
 
         [STAThread]
-        private static int Main()
+        private static int Main(string[] args)
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
             _root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
             _logPath = Path.Combine(_root, "logs", "stemforge-server.log");
+            _launcherLogPath = Path.Combine(_root, "logs", "stemforge-launcher.log");
+            foreach (string a in args)
+            {
+                if (a.EndsWith(".sfg", StringComparison.OrdinalIgnoreCase) && File.Exists(a))
+                {
+                    _openSfg = Path.GetFullPath(a);
+                }
+            }
             _profileDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "StemForge", "AppWindow");
@@ -49,8 +64,8 @@ namespace StemForge
             {
                 if (!firstInstance)
                 {
-                    // Already running: just open another StemForge window.
-                    if (IsServerHealthy()) OpenAppWindow(false);
+                    // Already running: just open another StemForge window (with the .sfg, if any).
+                    if (IsServerHealthy()) OpenAppWindow(false, ResolveStartUrl());
                     return 0;
                 }
 
@@ -90,7 +105,7 @@ namespace StemForge
                         if (NeedsWebBuild())
                         {
                             splash.SetStatus("Updating StemForge (building the app)...");
-                            if (!RunWebBuild()) error = "Building the StemForge web app failed. See " + _logPath;
+                            if (!RunWebBuild()) error = "Building the StemForge web app failed. See " + _launcherLogPath;
                         }
                         if (error == null)
                         {
@@ -123,8 +138,49 @@ namespace StemForge
                 return 1;
             }
 
-            OpenAppWindow(true);
+            OpenAppWindow(true, ResolveStartUrl());
             return 0;
+        }
+
+        /// <summary>Imports the .sfg passed on the command line (if any) and returns the URL to open.</summary>
+        private static string ResolveStartUrl()
+        {
+            if (_openSfg == null) return ServerUrl;
+            try
+            {
+                string body = "{\"path\":\"" + _openSfg.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"}";
+                using (var wc = new WebClient())
+                {
+                    wc.Proxy = null;
+                    wc.Headers[HttpRequestHeader.ContentType] = "application/json";
+                    string resp = wc.UploadString(ServerUrl + "/projects/import-path", "POST", body);
+                    Match m = Regex.Match(resp, "\"id\"\\s*:\\s*\"([^\"]+)\"");
+                    if (m.Success) return ServerUrl + "/?open=" + Uri.EscapeDataString(m.Groups[1].Value);
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowError("Could not open " + Path.GetFileName(_openSfg) + ":\n\n" + ex.Message);
+            }
+            return ServerUrl;
+        }
+
+        /// <summary>Reads desktop.keepEngineRunning from %LOCALAPPDATA%\StemForge\settings.json.</summary>
+        private static bool KeepEngineRunning()
+        {
+            try
+            {
+                string path = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "StemForge", "settings.json");
+                if (!File.Exists(path)) return false;
+                string json = File.ReadAllText(path);
+                Match m = Regex.Match(json, "\"keepEngineRunning\"\\s*:\\s*(true|false)");
+                return m.Success && m.Groups[1].Value == "true";
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         // ------------------------------------------------------------------ web build
@@ -154,7 +210,7 @@ namespace StemForge
 
         private static bool RunWebBuild()
         {
-            OpenLog();
+            OpenLog(_launcherLogPath);
             string npmArgs = Directory.Exists(Path.Combine(_root, "node_modules"))
                 ? "/c npm run build"
                 : "/c npm install && npm run build";
@@ -182,26 +238,25 @@ namespace StemForge
 
         private static string StartServer(string venvPython)
         {
-            OpenLog();
             string serverDir = Path.Combine(_root, "local-gpu-server");
-            var psi = new ProcessStartInfo(venvPython,
-                "-m uvicorn gpu_server:app --host 127.0.0.1 --port 8000")
+            Directory.CreateDirectory(Path.GetDirectoryName(_logPath));
+            string logForPython = _logPath.Replace("\\", "/");
+            // The server writes its own log file, so it keeps working if it outlives this launcher.
+            string code =
+                "import sys; f = open(r'" + logForPython + "', 'w', buffering=1, encoding='utf-8', errors='replace'); " +
+                "sys.stdout = sys.stderr = f; import uvicorn; " +
+                "uvicorn.run('gpu_server:app', host='127.0.0.1', port=8000)";
+            var psi = new ProcessStartInfo(venvPython, "-c \"" + code + "\"")
             {
                 WorkingDirectory = serverDir,
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
             };
             psi.EnvironmentVariables["TORCH_HOME"] = Path.Combine(serverDir, "models");
             psi.EnvironmentVariables["PYTHONUNBUFFERED"] = "1";
 
             _server = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            _server.OutputDataReceived += (s, e) => WriteLog(e.Data);
-            _server.ErrorDataReceived += (s, e) => WriteLog(e.Data);
             _server.Start();
-            _server.BeginOutputReadLine();
-            _server.BeginErrorReadLine();
 
             DateTime deadline = DateTime.UtcNow.AddSeconds(120);
             while (DateTime.UtcNow < deadline)
@@ -241,7 +296,7 @@ namespace StemForge
         {
             try
             {
-                if (_server != null && !_server.HasExited)
+                if (_server != null && !_server.HasExited && !KeepEngineRunning())
                 {
                     _server.Kill();
                     _server.WaitForExit(5000);
@@ -290,12 +345,12 @@ namespace StemForge
             return null;
         }
 
-        private static void OpenAppWindow(bool waitUntilClosed)
+        private static void OpenAppWindow(bool waitUntilClosed, string url)
         {
             string browser = FindBrowser();
             if (browser == null)
             {
-                Process.Start(ServerUrl);
+                Process.Start(url);
                 if (waitUntilClosed)
                 {
                     MessageBox.Show("StemForge is running in your web browser at " + ServerUrl +
@@ -306,7 +361,7 @@ namespace StemForge
             }
 
             Directory.CreateDirectory(_profileDir);
-            string args = "--app=" + ServerUrl +
+            string args = "--app=" + url +
                           " --user-data-dir=\"" + _profileDir + "\"" +
                           " --no-first-run --no-default-browser-check --window-size=1440,900";
             Process window = Process.Start(new ProcessStartInfo(browser, args) { UseShellExecute = false });
@@ -345,13 +400,13 @@ namespace StemForge
 
         private static readonly object LogLock = new object();
 
-        private static void OpenLog()
+        private static void OpenLog(string path)
         {
             lock (LogLock)
             {
                 if (_log != null) return;
-                Directory.CreateDirectory(Path.GetDirectoryName(_logPath));
-                _log = new StreamWriter(_logPath, false) { AutoFlush = true };
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                _log = new StreamWriter(path, false) { AutoFlush = true };
                 _log.WriteLine("[launcher] " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " starting StemForge");
             }
         }

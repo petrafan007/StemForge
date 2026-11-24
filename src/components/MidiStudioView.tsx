@@ -9,9 +9,11 @@ import {
   type MidiTrackInput,
 } from '../audio/midiEncoder';
 import { midiToNoteName } from '../audio/notationEngine';
+import { beatToTime, timeToBeat } from '../audio/timeline';
+import { stemLabel } from '../types/music';
 import { slugifyFilename, triggerBinaryDownload } from '../utils/download';
 
-type MelodicTrackId = 'keyboards' | 'guitar' | 'bass' | 'vocals';
+type MelodicTrackId = 'keyboards' | 'guitar' | 'lead' | 'bass' | 'vocals';
 type MidiTrackTab = MelodicTrackId | 'drums' | 'all';
 type PreviewMode = 'off' | 'keyboards' | 'drums' | 'combined';
 
@@ -27,6 +29,7 @@ interface MidiStudioViewProps {
   onChangeMidiPreviewMode: (mode: PreviewMode) => void;
   onSeek: (timeSec: number) => void;
   onPreviewNote: (midi: number, durationSec?: number, isDrum?: boolean) => void;
+  onOpenExport?: () => void;
 }
 
 /** Per-track display + General MIDI export settings. Channels are distinct so a multi-track file plays correctly. */
@@ -35,7 +38,8 @@ const MELODIC_TRACKS: Record<
   { label: string; program: number; channel: number; color: string; range: [number, number] }
 > = {
   keyboards: { label: 'Keyboards', program: 0, channel: 0, color: '#34D399', range: [21, 108] },
-  guitar: { label: 'Guitar', program: 25, channel: 1, color: '#F59E0B', range: [28, 100] },
+  guitar: { label: 'Guitar', program: 30, channel: 1, color: '#F59E0B', range: [28, 100] },
+  lead: { label: 'Lead Guitar', program: 29, channel: 4, color: '#FB923C', range: [28, 100] },
   bass: { label: 'Bass', program: 33, channel: 2, color: '#38BDF8', range: [16, 72] },
   vocals: { label: 'Vocals', program: 52, channel: 3, color: '#F43F5E', range: [36, 96] },
 };
@@ -62,6 +66,8 @@ function rawNotesFor(project: SongProject, id: MelodicTrackId): MidiNoteEvent[] 
       return project.keyboardMidi;
     case 'guitar':
       return project.guitarNotes;
+    case 'lead':
+      return project.leadNotes;
     case 'bass':
       return project.bassNotes;
     case 'vocals':
@@ -105,6 +111,7 @@ function BeatGridLines({ totalBeats }: { totalBeats: number }) {
 
 function PianoRoll({
   trackId,
+  label,
   notes,
   totalBeats,
   currentBeat,
@@ -114,6 +121,7 @@ function PianoRoll({
   onExport,
 }: {
   trackId: MelodicTrackId;
+  label: string;
   notes: MidiNoteEvent[];
   totalBeats: number;
   currentBeat: number;
@@ -122,7 +130,7 @@ function PianoRoll({
   onPreviewNote: (midi: number) => void;
   onExport: () => void;
 }) {
-  const meta = MELODIC_TRACKS[trackId];
+  const meta = { ...MELODIC_TRACKS[trackId], label };
   const gridWidth = Math.max(760, totalBeats * PX_PER_BEAT);
 
   const { minPitch, maxPitch } = useMemo(() => {
@@ -394,9 +402,16 @@ export function MidiStudioView({
   onChangeMidiPreviewMode,
   onSeek,
   onPreviewNote,
+  onOpenExport,
 }: MidiStudioViewProps) {
   const [activeTab, setActiveTab] = useState<MidiTrackTab>('keyboards');
   const [exportMessage, setExportMessage] = useState<string | null>(null);
+
+  const hasLead = Boolean(project.stems.lead);
+  const melodicIds: MelodicTrackId[] = hasLead
+    ? ['keyboards', 'guitar', 'lead', 'bass', 'vocals']
+    : ['keyboards', 'guitar', 'bass', 'vocals'];
+  const labelOf = (id: MelodicTrackId) => (id === 'guitar' || id === 'lead' ? stemLabel(id, project) : MELODIC_TRACKS[id].label);
 
   const melodic = useMemo(() => {
     const out = {} as Record<MelodicTrackId, MidiNoteEvent[]>;
@@ -416,16 +431,15 @@ export function MidiStudioView({
     [project.drumHits, quantize, minVelocity]
   );
 
-  const totalBeats = Math.max(8, Math.ceil((project.duration * project.bpm) / 60));
-  const currentBeat = (currentTime * project.bpm) / 60;
-  const seekBeat = (beat: number) => onSeek((beat * 60) / project.bpm);
+  const totalBeats = Math.max(8, Math.ceil(timeToBeat(project, project.duration)));
+  const currentBeat = timeToBeat(project, currentTime);
+  const seekBeat = (beat: number) => onSeek(Math.max(0, beatToTime(project, beat)));
 
   const buildTracks = (scope: MidiTrackTab): MidiTrackInput[] => {
-    const ids: MelodicTrackId[] =
-      scope === 'all' ? ['keyboards', 'guitar', 'bass', 'vocals'] : scope === 'drums' ? [] : [scope];
+    const ids: MelodicTrackId[] = scope === 'all' ? melodicIds : scope === 'drums' ? [] : [scope];
     const tracks: MidiTrackInput[] = ids
       .filter((id) => melodic[id].length > 0 || scope !== 'all')
-      .map((id) => ({ name: MELODIC_TRACKS[id].label, program: MELODIC_TRACKS[id].program, notes: melodic[id] }));
+      .map((id) => ({ name: labelOf(id), program: MELODIC_TRACKS[id].program, notes: melodic[id] }));
     if (scope === 'drums' || scope === 'all') {
       tracks.push({ name: 'Drums', notes: drumHitsToMidiEvents(quantizedDrums) });
     }
@@ -449,23 +463,19 @@ export function MidiStudioView({
     activeTab === 'keyboards' ? 'keyboards' : activeTab === 'drums' ? 'drums' : activeTab === 'all' ? 'combined' : null;
 
   const tabLabel = (id: MidiTrackTab) =>
-    id === 'all' ? 'All Stems' : id === 'drums' ? 'Drums' : MELODIC_TRACKS[id].label;
+    id === 'all' ? 'All Stems' : id === 'drums' ? 'Drums' : labelOf(id);
 
   const tabs: Array<{ id: MidiTrackTab; label: string }> = [
-    ...(['keyboards', 'guitar', 'bass', 'vocals'] as MelodicTrackId[]).map((id) => ({
+    ...melodicIds.map((id) => ({
       id,
-      label: `${MELODIC_TRACKS[id].label} (${melodic[id].length})`,
+      label: `${labelOf(id)} (${melodic[id].length})`,
     })),
     { id: 'drums', label: `Drums (${quantizedDrums.length})` },
     { id: 'all', label: 'All Stems' },
   ];
 
   const visibleMelodic: MelodicTrackId[] =
-    activeTab === 'all'
-      ? (['keyboards', 'guitar', 'bass', 'vocals'] as MelodicTrackId[])
-      : activeTab === 'drums'
-        ? []
-        : [activeTab];
+    activeTab === 'all' ? melodicIds : activeTab === 'drums' ? [] : activeTab === 'lead' && !hasLead ? [] : [activeTab];
 
   return (
     <div className="max-w-[1440px] mx-auto px-4 sm:px-6 py-6 flex flex-col gap-5">
@@ -501,15 +511,21 @@ export function MidiStudioView({
                 onChange={(e) => onChangeQuantize(e.target.value as QuantizeGrid)}
                 className="h-8 px-2.5 rounded bg-[#13161C] border border-white/[0.08] text-xs font-mono text-slate-200 cursor-pointer"
               >
-                <option value="1/4" className="bg-[#13161C]">
-                  1/4 Note
-                </option>
-                <option value="1/8" className="bg-[#13161C]">
-                  1/8 Note
-                </option>
-                <option value="1/16" className="bg-[#13161C]">
-                  1/16 Note
-                </option>
+                {(
+                  [
+                    ['off', 'Off (as played)'],
+                    ['1/4', '1/4 Note'],
+                    ['1/8', '1/8 Note'],
+                    ['1/16', '1/16 Note'],
+                    ['1/32', '1/32 Note'],
+                    ['1/8T', '1/8 Triplet'],
+                    ['1/16T', '1/16 Triplet'],
+                  ] as Array<[QuantizeGrid, string]>
+                ).map(([v, l]) => (
+                  <option key={v} value={v} className="bg-[#13161C]">
+                    {l}
+                  </option>
+                ))}
               </select>
             </label>
 
@@ -572,6 +588,15 @@ export function MidiStudioView({
             <Download className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Download {tabLabel(activeTab)} MIDI (.mid)</span>
           </button>
+          {onOpenExport && (
+            <button
+              type="button"
+              onClick={onOpenExport}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#13161C] hover:bg-[#1B1F27] border border-white/[0.08] rounded-md whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              More MIDI export options…
+            </button>
+          )}
         </div>
       </div>
 
@@ -588,6 +613,7 @@ export function MidiStudioView({
         <PianoRoll
           key={id}
           trackId={id}
+          label={labelOf(id)}
           notes={melodic[id]}
           totalBeats={totalBeats}
           currentBeat={currentBeat}

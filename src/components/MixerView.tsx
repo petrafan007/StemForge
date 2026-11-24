@@ -1,19 +1,20 @@
 import { useEffect, useRef } from 'react';
 import { Download, MicOff, RotateCcw, Volume2, VolumeX } from 'lucide-react';
-import { STEM_LIST, type SongProject, type StemId, type StemMixerState } from '../types/music';
-import { encodeWavPcm } from '../audio/midiEncoder';
-import { slugifyFilename, triggerBinaryDownload } from '../utils/download';
+import { STEM_LIST, projectStemIds, stemLabel, type SongProject, type StemId, type StemMixerState } from '../types/music';
 
 interface MixerViewProps {
   project: SongProject;
   mixer: Record<StemId, StemMixerState>;
   currentTime: number;
   onUpdateStem: (id: StemId, patch: Partial<StemMixerState>) => void;
-  onApplyPreset: (preset: 'all' | 'instrumental' | 'vocalsOnly' | 'rhythm') => void;
+  onApplyPreset: (preset: MixPreset) => void;
   onSeek: (timeSec: number) => void;
+  onExportStem: (id: StemId) => void;
   onOpenMidi: () => void;
   onOpenNotation: () => void;
 }
+
+export type MixPreset = 'all' | 'instrumental' | 'vocalsOnly' | 'rhythm' | 'guitars';
 
 interface WaveformCanvasProps {
   peaks: number[];
@@ -123,35 +124,19 @@ export function MixerView({
   onSeek,
   onOpenMidi,
   onOpenNotation,
+  onExportStem,
 }: MixerViewProps) {
-  const anySolo = (Object.values(mixer) as StemMixerState[]).some((s) => s.solo);
-  const isInstrumental =
-    mixer.vocals.muted &&
-    !mixer.guitar.muted &&
-    !mixer.bass.muted &&
-    !mixer.drums.muted &&
-    !mixer.keyboards.muted &&
-    !anySolo;
-  const isVocalsOnly = mixer.vocals.solo && !mixer.guitar.solo && !mixer.bass.solo;
+  const present = projectStemIds(project);
+  const others = (ids: StemId[]) => present.filter((id) => !ids.includes(id));
+  const anySolo = present.some((id) => mixer[id].solo);
+  const isInstrumental = mixer.vocals.muted && others(['vocals']).every((id) => !mixer[id].muted) && !anySolo;
+  const isVocalsOnly = mixer.vocals.solo && others(['vocals']).every((id) => !mixer[id].solo);
   const isRhythm =
-    !mixer.bass.muted &&
-    !mixer.drums.muted &&
-    mixer.vocals.muted &&
-    mixer.guitar.muted &&
-    mixer.keyboards.muted;
-  const isAllActive = !anySolo && (Object.values(mixer) as StemMixerState[]).every((s) => !s.muted);
+    !mixer.bass.muted && !mixer.drums.muted && others(['bass', 'drums']).every((id) => mixer[id].muted);
+  const isGuitars = others(['guitar', 'lead']).every((id) => mixer[id].muted) && !mixer.guitar.muted;
+  const isAllActive = !anySolo && present.every((id) => !mixer[id].muted);
 
   const progress = project.duration > 0 ? Math.min(1, currentTime / project.duration) : 0;
-
-  const handleExportStemWav = (id: StemId) => {
-    const buffer = project.stems[id].buffer;
-    const channels: Float32Array[] = [];
-    for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
-      channels.push(buffer.getChannelData(ch));
-    }
-    const wavBytes = encodeWavPcm(channels, buffer.sampleRate);
-    triggerBinaryDownload(wavBytes, `${slugifyFilename(project.title)}_${id}.wav`, 'audio/wav');
-  };
 
   return (
     <div className="max-w-[1440px] mx-auto px-4 sm:px-6 py-6 flex flex-col gap-5">
@@ -169,7 +154,7 @@ export function MixerView({
                 : 'bg-[#13161C] border-white/[0.08] text-slate-300 hover:text-white hover:bg-[#1B1F27]'
             }`}
           >
-            All 5 Tracks
+            All {present.length} Tracks
           </button>
           <button
             type="button"
@@ -208,6 +193,18 @@ export function MixerView({
           >
             Bass & Drums
           </button>
+          <button
+            type="button"
+            onClick={() => onApplyPreset('guitars')}
+            aria-pressed={isGuitars}
+            className={`px-3 py-1.5 text-xs font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              isGuitars
+                ? 'bg-orange-500/20 border-orange-500/50 text-orange-200'
+                : 'bg-[#13161C] border-white/[0.08] text-slate-300 hover:text-white hover:bg-[#1B1F27]'
+            }`}
+          >
+            Guitars Only
+          </button>
         </div>
 
         <div className="flex flex-wrap items-center gap-3 text-xs">
@@ -216,7 +213,7 @@ export function MixerView({
             onClick={onOpenMidi}
             className="text-slate-300 hover:text-amber-400 underline underline-offset-4 decoration-white/20 hover:decoration-amber-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            Convert Keys & Drums to MIDI
+            MIDI for every track
           </button>
           <span className="text-slate-600" aria-hidden="true">
             ·
@@ -226,7 +223,7 @@ export function MixerView({
             onClick={onOpenNotation}
             className="text-slate-300 hover:text-amber-400 underline underline-offset-4 decoration-white/20 hover:decoration-amber-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            Guitar & Bass Tabs / Chords / Sheet
+            Guitar & Bass Tabs / Chords / Sheet Music
           </button>
         </div>
       </div>
@@ -236,9 +233,10 @@ export function MixerView({
         className="border border-white/[0.08] rounded-lg overflow-hidden bg-[#13161C] divide-y divide-white/[0.06]"
         data-testid="stem-mixer-tracks"
       >
-        {STEM_LIST.map((stemMeta) => {
+        {STEM_LIST.filter((m) => project.stems[m.id]).map((stemMeta) => {
           const state = mixer[stemMeta.id];
-          const trackData = project.stems[stemMeta.id];
+          const trackData = project.stems[stemMeta.id]!;
+          const label = stemLabel(stemMeta.id, project);
           const isAudible = !state.muted && (!anySolo || state.solo);
           const volumePct = Math.round(state.volume * 100);
 
@@ -267,7 +265,7 @@ export function MixerView({
                             isAudible ? 'text-white' : 'text-slate-500'
                           }`}
                         >
-                          {stemMeta.label}
+                          {label}
                         </h2>
                         <span className="text-[11px] font-mono text-slate-500 hidden sm:inline">
                           {stemMeta.role}
@@ -282,8 +280,8 @@ export function MixerView({
                       type="button"
                       onClick={() => onUpdateStem(stemMeta.id, { muted: !state.muted })}
                       aria-pressed={state.muted}
-                      aria-label={`Mute ${stemMeta.label}`}
-                      title={`Mute ${stemMeta.label} (Key ${stemMeta.shortcut})`}
+                      aria-label={`Mute ${label}`}
+                      title={`Mute ${label} (Key ${stemMeta.shortcut})`}
                       className={`w-8 h-8 rounded text-xs font-mono font-semibold border transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-500 ${
                         state.muted
                           ? 'bg-rose-500/25 border-rose-500 text-rose-200'
@@ -296,8 +294,8 @@ export function MixerView({
                       type="button"
                       onClick={() => onUpdateStem(stemMeta.id, { solo: !state.solo })}
                       aria-pressed={state.solo}
-                      aria-label={`Solo ${stemMeta.label}`}
-                      title={`Solo ${stemMeta.label}`}
+                      aria-label={`Solo ${label}`}
+                      title={`Solo ${label}`}
                       className={`w-8 h-8 rounded text-xs font-mono font-semibold border transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-500 ${
                         state.solo
                           ? 'bg-amber-500/25 border-amber-500 text-amber-200'
@@ -314,7 +312,7 @@ export function MixerView({
                   <button
                     type="button"
                     onClick={() => onUpdateStem(stemMeta.id, { muted: !state.muted })}
-                    aria-label={state.muted ? `Unmute ${stemMeta.label}` : `Silence ${stemMeta.label}`}
+                    aria-label={state.muted ? `Unmute ${label}` : `Silence ${label}`}
                     className="text-slate-400 hover:text-slate-200 shrink-0 cursor-pointer"
                   >
                     {isAudible && state.volume > 0 ? (
@@ -335,7 +333,7 @@ export function MixerView({
                         muted: false,
                       })
                     }
-                    aria-label={`${stemMeta.label} volume`}
+                    aria-label={`${label} volume`}
                     className="studio-fader flex-1"
                   />
                   <span className="w-10 text-right font-mono text-xs tabular-nums text-slate-400">
@@ -353,7 +351,7 @@ export function MixerView({
                   active={isAudible}
                   progress={progress}
                   duration={project.duration}
-                  label={stemMeta.label}
+                  label={label}
                   onSeek={onSeek}
                 />
               </div>
@@ -362,12 +360,12 @@ export function MixerView({
               <div className="flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => handleExportStemWav(stemMeta.id)}
-                  aria-label={`Download ${stemMeta.label} stem as WAV`}
+                  onClick={() => onExportStem(stemMeta.id)}
+                  aria-label={`Export ${label} track`}
                   className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-300 hover:text-white bg-[#1B1F27] hover:bg-[#252B36] border border-white/[0.08] rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-500"
                 >
                   <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>WAV</span>
+                  <span>Export</span>
                 </button>
               </div>
             </div>
@@ -382,7 +380,7 @@ export function MixerView({
           <span aria-hidden="true">·</span>
           <span>Press Space to play or pause</span>
           <span aria-hidden="true">·</span>
-          <span>Keys 1–5 mute individual tracks</span>
+          <span>Keys 1–{present.length} mute tracks</span>
         </div>
         <button
           type="button"

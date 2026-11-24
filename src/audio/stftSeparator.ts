@@ -479,7 +479,7 @@ export function separateStereoStemsStft(
 
     // 5. Overlap-Add Inverse STFT Synthesis per stem (exact COLA scale = 0.5 for sqrt-Hann @ 75% overlap)
     const synthStem = (
-      stemId: StemId,
+      stemId: Exclude<StemId, 'lead'>,
       mask: Float32Array,
       vocalMidProjection: 'vocal' | 'instGuitar' | 'instKeys' | 'none'
     ) => {

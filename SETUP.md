@@ -75,7 +75,7 @@ The download is about 3 GB (mostly PyTorch), and the environment takes about 5 G
 
 ### Desktop app (recommended)
 
-Build the launcher and desktop shortcut once:
+Build the launcher, desktop shortcut and `.sfg` file type once:
 
 ```powershell
 .\desktop\build-desktop-app.ps1
@@ -102,7 +102,24 @@ The first separation downloads the `htdemucs_6s` weights (~50 MB) into `local-gp
 
 ---
 
-## 5. Sharing the GPU with ComfyUI
+## 5. Projects, saving and exporting
+
+- **Drafts:** every song you import is saved in `Documents\StemForge\Projects\<date>-<title>\` (`project.json`, `original.*` and 24-bit FLAC stems). Mixer, tempo/key fixes, tunings and MIDI settings autosave, and StemForge reopens the last song on start. Change the folder in **Settings → Projects & Files**. Deleting a project moves it to the `.trash` folder there.
+- **.sfg files:** **File → Save project (Ctrl+S)** / **Save project as (Ctrl+Shift+S)** writes a single `.sfg` file (a ZIP of the project) anywhere you like; **File → Open project (Ctrl+O)**, dragging a `.sfg` onto the window, or double-clicking it in Explorer opens it.
+- **Export (Ctrl+E):** audio in WAV / AIFF / FLAC / ALAC / MP3 / AAC / Ogg / Opus with any sample rate, bit depth or bitrate; any combination of tracks, mixed down (optionally with your mixer settings) or one file per track; MIDI per track or combined; MusicXML scores with TAB staves and text tabs.
+
+## 6. Metal / rock settings
+
+**Settings → Genre & Transcription → Metal** widens the tempo range (70–260 BPM), catches shorter notes (tremolo picking), lowers guitar sensitivity to ignore distortion overtones, and allows 7/8-string tunings in auto-detect. Turn on **Split lead and rhythm guitars** for wide double-tracked guitars. If the tempo comes out at half/double speed, use **Settings → This Song** (½× / 2× or a suggested tempo).
+
+For the best drum transcription install the optional ADTOF model (trained on rock/metal charts; weights are licensed for non-commercial use):
+
+```powershell
+cd local-gpu-server
+.\setup_windows.ps1 -WithAdtof
+```
+
+## 7. Sharing the GPU with ComfyUI
 
 Both apps can be installed side by side without conflicts. While they're running, they share 12 GB of VRAM:
 - StemForge uses roughly 3–4 GB during a separation and frees it afterwards.
@@ -111,7 +128,7 @@ Both apps can be installed side by side without conflicts. While they're running
 
 ---
 
-## 6. Troubleshooting
+## 8. Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |

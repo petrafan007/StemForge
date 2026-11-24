@@ -1,5 +1,16 @@
 import type { DrumHitEvent, MidiNoteEvent, SongProject, StemId, StemMixerState } from '../types/music';
+import { ALL_STEM_IDS } from '../types/music';
 import { midiToFrequency } from './notationEngine';
+import { quarterBeatsPerMeasure, timeToBeat } from './timeline';
+
+/**
+ * Pitch handling:
+ *  - 'buffers'   : the caller swaps in pitch-shifted stems (server Rubber Band render) so key changes
+ *                  keep the original tempo. Used for songs in the project library.
+ *  - 'varispeed' : every stem (drums included) is resampled together, like a tape machine, so the
+ *                  tracks stay in sync; key and speed change together. Used for demos/browser imports.
+ */
+export type PitchMode = 'buffers' | 'varispeed';
 
 export class MultiStemAudioEngine {
   private ctx: AudioContext | null = null;
@@ -11,10 +22,12 @@ export class MultiStemAudioEngine {
 
   private project: SongProject | null = null;
   private mixerState: Record<StemId, StemMixerState> | null = null;
+  private bufferOverrides: Partial<Record<StemId, AudioBuffer>> = {};
 
   private isPlaying = false;
   private playbackRate = 1.0;
   private transposeSemitones = 0;
+  private pitchMode: PitchMode = 'varispeed';
   private loopEnabled = true;
   private metronomeEnabled = false;
   private midiPreviewMode: 'off' | 'keyboards' | 'drums' | 'combined' = 'off';
@@ -34,7 +47,7 @@ export class MultiStemAudioEngine {
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.value = 0.94;
 
-      // Transparent studio brickwall limiter prevents digital clipping even if stem faders are boosted
+      // Transparent brickwall limiter prevents digital clipping even if stem faders are boosted
       this.masterLimiter = this.ctx.createDynamicsCompressor();
       this.masterLimiter.threshold.value = -1.5;
       this.masterLimiter.knee.value = 4;
@@ -59,7 +72,15 @@ export class MultiStemAudioEngine {
     this.mixerState = mixer;
     this.midiKeyNotes = midiKeyNotes;
     this.midiDrumHits = midiDrumHits;
+    this.bufferOverrides = {};
     this.pausedOffsetSec = 0;
+    this.pitchMode = project.serverProjectId ? 'buffers' : 'varispeed';
+    this.applyMasterLevel();
+  }
+
+  /** Updates note data / tempo grid without interrupting playback. */
+  public updateProject(project: SongProject): void {
+    this.project = project;
   }
 
   public updateMidiData(keyNotes: MidiNoteEvent[], drumHits: DrumHitEvent[]): void {
@@ -80,21 +101,27 @@ export class MultiStemAudioEngine {
   public setPlaybackRate(rate: number): void {
     const current = this.getCurrentTime();
     this.playbackRate = Math.max(0.5, Math.min(1.5, rate));
-    if (this.isPlaying) {
-      this.startFrom(current);
-    }
+    if (this.isPlaying) this.startFrom(current);
+  }
+
+  public getPitchMode(): PitchMode {
+    return this.pitchMode;
   }
 
   public setTranspose(semitones: number): void {
-    this.transposeSemitones = Math.max(-6, Math.min(6, semitones));
-    const detuneCents = this.transposeSemitones * 100;
-    const melodicStems: StemId[] = ['vocals', 'guitar', 'bass', 'keyboards'];
-    for (const id of melodicStems) {
-      const src = this.sources[id];
-      if (src) {
-        src.detune.setValueAtTime(detuneCents, this.ctx?.currentTime ?? 0);
-      }
-    }
+    const current = this.getCurrentTime();
+    this.transposeSemitones = Math.max(-12, Math.min(12, Math.round(semitones)));
+    if (this.pitchMode === 'varispeed' && this.isPlaying) this.startFrom(current);
+  }
+
+  /**
+   * Swaps in alternative audio for some stems (e.g. pitch-shifted renders) and continues
+   * playing from the same position. Pass an empty object to restore the originals.
+   */
+  public setBufferOverrides(overrides: Partial<Record<StemId, AudioBuffer>>): void {
+    const current = this.getCurrentTime();
+    this.bufferOverrides = overrides;
+    if (this.isPlaying) this.startFrom(current);
   }
 
   public setLoop(enabled: boolean): void {
@@ -112,11 +139,15 @@ export class MultiStemAudioEngine {
     return this.isPlaying;
   }
 
+  private effectiveRate(): number {
+    return this.pitchMode === 'varispeed' ? this.playbackRate * 2 ** (this.transposeSemitones / 12) : this.playbackRate;
+  }
+
   public getCurrentTime(): number {
     if (!this.project) return 0;
     if (!this.isPlaying || !this.ctx) return this.pausedOffsetSec;
 
-    const elapsed = (this.ctx.currentTime - this.startedAtCtxTime) * this.playbackRate;
+    const elapsed = (this.ctx.currentTime - this.startedAtCtxTime) * this.effectiveRate();
     const raw = this.pausedOffsetSec + elapsed;
     if (this.loopEnabled && this.project.duration > 0) {
       return raw % this.project.duration;
@@ -160,14 +191,10 @@ export class MultiStemAudioEngine {
     }
   }
 
-  /**
-   * Triggers a single immediate MIDI preview tone when clicking notes in Piano Roll or Chord Diagrams.
-   */
+  /** Single immediate preview tone when clicking notes in the piano roll or chord diagrams. */
   public triggerPreviewNote(midi: number, durationSec = 0.4, isDrum = false): void {
     const ctx = this.ensureContext();
-    if (ctx.state === 'suspended') {
-      void ctx.resume();
-    }
+    if (ctx.state === 'suspended') void ctx.resume();
     const now = ctx.currentTime;
     if (isDrum) {
       this.scheduleDrumSynthHit(ctx, midi, now, 110);
@@ -178,19 +205,24 @@ export class MultiStemAudioEngine {
 
   public triggerChordPreview(midis: number[]): void {
     const ctx = this.ensureContext();
-    if (ctx.state === 'suspended') {
-      void ctx.resume();
-    }
+    if (ctx.state === 'suspended') void ctx.resume();
     const now = ctx.currentTime;
     midis.forEach((m, idx) => {
       this.scheduleKeySynthNote(ctx, m + this.transposeSemitones, now + idx * 0.03, 0.75, 82);
     });
   }
 
+  private applyMasterLevel(): void {
+    if (!this.masterGain) return;
+    const comp = this.project?.levelCompensation ?? 1;
+    this.masterGain.gain.value = 0.94 * comp;
+  }
+
   private startFrom(offsetSec: number): void {
     if (!this.project || !this.mixerState) return;
     const ctx = this.ensureContext();
     this.teardownSources();
+    this.applyMasterLevel();
 
     const startTime = ctx.currentTime + 0.02;
     this.startedAtCtxTime = startTime;
@@ -198,15 +230,16 @@ export class MultiStemAudioEngine {
     this.isPlaying = true;
     this.lastScheduledBeat = -1;
 
-    const stemIds: StemId[] = ['vocals', 'guitar', 'bass', 'drums', 'keyboards'];
-    for (const id of stemIds) {
+    for (const id of ALL_STEM_IDS) {
       const stem = this.project.stems[id];
+      if (!stem) continue;
+      const buffer = this.bufferOverrides[id] ?? stem.buffer;
       const src = ctx.createBufferSource();
-      src.buffer = stem.buffer;
+      src.buffer = buffer;
       src.playbackRate.value = this.playbackRate;
       src.loop = this.loopEnabled;
-      if (id !== 'drums') {
-        src.detune.value = this.transposeSemitones * 100;
+      if (this.pitchMode === 'varispeed') {
+        src.detune.value = this.transposeSemitones * 100; // all stems together keeps them in sync
       }
 
       const gain = ctx.createGain();
@@ -219,7 +252,7 @@ export class MultiStemAudioEngine {
       this.gains[id] = gain;
       this.panners[id] = panner;
 
-      src.start(startTime, offsetSec % Math.max(0.01, stem.buffer.duration));
+      src.start(startTime, offsetSec % Math.max(0.01, buffer.duration));
     }
 
     this.applyMixerGains();
@@ -227,22 +260,21 @@ export class MultiStemAudioEngine {
   }
 
   private applyMixerGains(): void {
-    if (!this.mixerState || !this.ctx) return;
-    const anySolo = (Object.values(this.mixerState) as StemMixerState[]).some((s) => s.solo);
+    if (!this.mixerState || !this.ctx || !this.project) return;
+    const present = ALL_STEM_IDS.filter((id) => this.project!.stems[id]);
+    const anySolo = present.some((id) => this.mixerState![id]?.solo);
     const now = this.ctx.currentTime;
 
-    (['vocals', 'guitar', 'bass', 'drums', 'keyboards'] as StemId[]).forEach((id) => {
+    present.forEach((id) => {
       const state = this.mixerState![id];
       const gainNode = this.gains[id];
       const panNode = this.panners[id];
-      if (!gainNode || !panNode) return;
+      if (!gainNode || !panNode || !state) return;
 
       let effectiveGain = state.muted ? 0 : state.volume;
-      if (anySolo && !state.solo) {
-        effectiveGain = 0;
-      }
+      if (anySolo && !state.solo) effectiveGain = 0;
 
-      // If MIDI Preview Mode is active, gently duck the corresponding acoustic stem so the MIDI synth shines
+      // MIDI preview: duck the matching acoustic stem so the synth is audible
       if (
         (this.midiPreviewMode === 'keyboards' && id === 'keyboards') ||
         (this.midiPreviewMode === 'drums' && id === 'drums') ||
@@ -257,28 +289,25 @@ export class MultiStemAudioEngine {
   }
 
   private startAuxScheduler(): void {
-    if (this.schedulerTimer !== null) {
-      window.clearInterval(this.schedulerTimer);
-    }
+    if (this.schedulerTimer !== null) window.clearInterval(this.schedulerTimer);
     this.schedulerTimer = window.setInterval(() => {
       if (!this.isPlaying || !this.project || !this.ctx) return;
       const curTime = this.getCurrentTime();
-      const bpm = this.project.bpm;
-      const secPerBeat = 60 / bpm;
-      const currentBeat = curTime / secPerBeat;
+      const grid = { bpm: this.project.bpm, beatOffsetSec: this.project.beatOffsetSec };
+      const secPerBeat = 60 / grid.bpm;
+      const currentBeat = timeToBeat(grid, curTime);
+      const rate = this.effectiveRate();
       const lookaheadBeats = 0.25;
 
-      // Metronome click on quarter beats
       if (this.metronomeEnabled) {
         const nextWholeBeat = Math.floor(currentBeat + 0.05);
         if (nextWholeBeat !== this.lastScheduledBeat && nextWholeBeat >= 0) {
           this.lastScheduledBeat = nextWholeBeat;
-          const isDownbeat = nextWholeBeat % this.project.timeSignature[0] === 0;
-          this.scheduleClick(this.ctx, this.ctx.currentTime + 0.01, isDownbeat);
+          const perBar = Math.max(1, Math.round(quarterBeatsPerMeasure(this.project.timeSignature)));
+          this.scheduleClick(this.ctx, this.ctx.currentTime + 0.01, nextWholeBeat % perBar === 0);
         }
       }
 
-      // Real-time MIDI Synth Preview scheduling
       if (this.midiPreviewMode !== 'off') {
         const winStart = currentBeat;
         const winEnd = currentBeat + lookaheadBeats;
@@ -286,12 +315,12 @@ export class MultiStemAudioEngine {
         if (this.midiPreviewMode === 'keyboards' || this.midiPreviewMode === 'combined') {
           for (const n of this.midiKeyNotes) {
             if (n.startBeat >= winStart && n.startBeat < winEnd) {
-              const dt = ((n.startBeat - winStart) * secPerBeat) / this.playbackRate;
+              const dt = ((n.startBeat - winStart) * secPerBeat) / rate;
               this.scheduleKeySynthNote(
                 this.ctx,
                 n.midi + this.transposeSemitones,
                 this.ctx.currentTime + dt,
-                Math.min(0.8, (n.durationBeats * secPerBeat) / this.playbackRate),
+                Math.min(0.8, (n.durationBeats * secPerBeat) / rate),
                 n.velocity
               );
             }
@@ -301,7 +330,7 @@ export class MultiStemAudioEngine {
         if (this.midiPreviewMode === 'drums' || this.midiPreviewMode === 'combined') {
           for (const h of this.midiDrumHits) {
             if (h.startBeat >= winStart && h.startBeat < winEnd) {
-              const dt = ((h.startBeat - winStart) * secPerBeat) / this.playbackRate;
+              const dt = ((h.startBeat - winStart) * secPerBeat) / rate;
               this.scheduleDrumSynthHit(this.ctx, h.midi, this.ctx.currentTime + dt, h.velocity);
             }
           }
@@ -316,18 +345,12 @@ export class MultiStemAudioEngine {
     osc.frequency.setValueAtTime(accent ? 1320 : 880, time);
     g.gain.setValueAtTime(accent ? 0.22 : 0.12, time);
     g.gain.exponentialRampToValueAtTime(0.001, time + 0.04);
-    osc.connect(g).connect(this.masterGain!);
+    osc.connect(g).connect(this.masterLimiter ?? this.masterGain!);
     osc.start(time);
     osc.stop(time + 0.05);
   }
 
-  private scheduleKeySynthNote(
-    ctx: AudioContext,
-    midi: number,
-    time: number,
-    duration: number,
-    velocity: number
-  ): void {
+  private scheduleKeySynthNote(ctx: AudioContext, midi: number, time: number, duration: number, velocity: number): void {
     const osc = ctx.createOscillator();
     const osc2 = ctx.createOscillator();
     const g = ctx.createGain();
@@ -344,7 +367,7 @@ export class MultiStemAudioEngine {
 
     osc.connect(g);
     osc2.connect(g);
-    g.connect(this.masterGain!);
+    g.connect(this.masterLimiter ?? this.masterGain!);
     osc.start(time);
     osc2.start(time);
     osc.stop(time + duration + 0.05);
@@ -352,20 +375,19 @@ export class MultiStemAudioEngine {
   }
 
   private scheduleDrumSynthHit(ctx: AudioContext, midi: number, time: number, velocity: number): void {
+    const out = this.masterLimiter ?? this.masterGain!;
     const amp = (velocity / 127) * 0.35;
-    if (midi === 36) {
-      // Kick
+    if (midi === 36 || midi === 35) {
       const osc = ctx.createOscillator();
       const g = ctx.createGain();
       osc.frequency.setValueAtTime(140, time);
       osc.frequency.exponentialRampToValueAtTime(45, time + 0.12);
       g.gain.setValueAtTime(amp, time);
       g.gain.exponentialRampToValueAtTime(0.001, time + 0.18);
-      osc.connect(g).connect(this.masterGain!);
+      osc.connect(g).connect(out);
       osc.start(time);
       osc.stop(time + 0.2);
     } else if (midi === 38 || midi === 45) {
-      // Snare / Tom
       const osc = ctx.createOscillator();
       const g = ctx.createGain();
       osc.type = 'triangle';
@@ -373,18 +395,17 @@ export class MultiStemAudioEngine {
       osc.frequency.exponentialRampToValueAtTime(midi === 38 ? 110 : 80, time + 0.1);
       g.gain.setValueAtTime(amp * 0.85, time);
       g.gain.exponentialRampToValueAtTime(0.001, time + 0.14);
-      osc.connect(g).connect(this.masterGain!);
+      osc.connect(g).connect(out);
       osc.start(time);
       osc.stop(time + 0.16);
     } else {
-      // Hi-hat / Crash
       const osc = ctx.createOscillator();
       const g = ctx.createGain();
       osc.type = 'square';
       osc.frequency.setValueAtTime(midi === 49 ? 6200 : 8400, time);
       g.gain.setValueAtTime(amp * 0.25, time);
       g.gain.exponentialRampToValueAtTime(0.001, time + (midi === 42 ? 0.05 : 0.18));
-      osc.connect(g).connect(this.masterGain!);
+      osc.connect(g).connect(out);
       osc.start(time);
       osc.stop(time + 0.2);
     }
@@ -411,9 +432,7 @@ export class MultiStemAudioEngine {
 
   public dispose(): void {
     this.stop();
-    if (this.ctx && this.ctx.state !== 'closed') {
-      void this.ctx.close();
-    }
+    if (this.ctx && this.ctx.state !== 'closed') void this.ctx.close();
     this.ctx = null;
   }
 }

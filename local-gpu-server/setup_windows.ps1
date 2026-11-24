@@ -1,13 +1,19 @@
 # StemForge Local GPU Setup Script for Windows (NVIDIA RTX / CUDA)
 # Usage:  .\setup_windows.ps1            (auto-picks Python 3.12 / 3.11 / 3.10)
 #         .\setup_windows.ps1 -Python "C:\Path\To\python.exe"
+#         .\setup_windows.ps1 -WithAdtof (also installs the ADTOF neural drum transcriber)
 #
 # Everything is installed into local-gpu-server\.venv only. Nothing is installed globally,
 # and other Python setups on this PC (e.g. ComfyUI's embedded Python) are never touched.
 
 param(
-    [string]$Python = ""
+    [string]$Python = "",
+    [switch]$WithAdtof
 )
+
+# ADTOF-pytorch (drum transcription trained on rock/metal rhythm-game charts). Pinned to the
+# commit that was reviewed for StemForge. Model weights: CC BY-NC-SA 4.0 (non-commercial use).
+$AdtofSpec = "adtof-pytorch @ git+https://github.com/xavriley/ADTOF-pytorch.git@85c192e78f716ea0b111cc8a5ee4a8f6a3a4f8a9"
 
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
@@ -65,6 +71,12 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Dependency install failed." }
 Write-Host "Installing Spotify Basic Pitch (polyphonic audio-to-MIDI, ONNX backend) ..."
 & $venvPython -m pip install --no-deps "basic-pitch==0.4.0"
 if ($LASTEXITCODE -ne 0) { Write-Error "Basic Pitch install failed." }
+
+if ($WithAdtof) {
+    Write-Host "Installing ADTOF neural drum transcription (pinned commit) ..."
+    & $venvPython -m pip install --no-deps $AdtofSpec
+    if ($LASTEXITCODE -ne 0) { Write-Warning "ADTOF install failed; StemForge will use its built-in drum onset detector." }
+}
 
 Write-Host "Verifying NVIDIA CUDA GPU detection and transcription model ..."
 & $venvPython -c "import torch; ok = torch.cuda.is_available(); print('CUDA Available:', ok); print('GPU:', torch.cuda.get_device_name(0) if ok else 'CPU fallback')"

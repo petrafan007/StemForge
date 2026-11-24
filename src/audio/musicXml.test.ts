@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildTimeline, encodeMusicXml, keyToFifths, splitDuration } from './musicXml';
 import { GUITAR_TUNINGS, mapNotesToTab } from './notationEngine';
-import { gpuNotesToMidiEvents } from './gpuClient';
+import { tuplesToMidiEvents } from './musicAnalysis';
 
 test('keyToFifths maps major and minor keys onto the circle of fifths', () => {
   assert.equal(keyToFifths(0, 'major'), 0); // C
@@ -50,14 +50,14 @@ test('mapNotesToTab puts a chord on distinct strings', () => {
 });
 
 test('encodeMusicXml writes a guitar part with notation + TAB staves, chords and ties', () => {
-  const notes = gpuNotesToMidiEvents(
+  const notes = tuplesToMidiEvents(
     [
       [0, 1, 48, 90],
       [0, 1, 52, 90],
       [0, 1, 55, 90],
       [1.5, 3.5, 57, 80], // crosses the bar line at 120 BPM (beat 3 -> beat 7)
     ],
-    120,
+    { bpm: 120, beatOffsetSec: 0 },
     'gtr'
   );
   const tabNotes = mapNotesToTab(notes, GUITAR_TUNINGS.standard);
@@ -91,13 +91,13 @@ test('encodeMusicXml writes a guitar part with notation + TAB staves, chords and
   assert.equal((xml.match(/<note>/g) || []).length, (xml.match(/<\/note>/g) || []).length);
 });
 
-test('gpuNotesToMidiEvents converts seconds to beats and drops invalid notes', () => {
-  const ev = gpuNotesToMidiEvents(
+test('tuplesToMidiEvents converts seconds to beats and drops invalid notes', () => {
+  const ev = tuplesToMidiEvents(
     [
       [1, 1.5, 60, 100],
       [2, 1, 62, 100], // end before start -> dropped
     ],
-    120,
+    { bpm: 120, beatOffsetSec: 0 },
     'k'
   );
   assert.equal(ev.length, 1);
