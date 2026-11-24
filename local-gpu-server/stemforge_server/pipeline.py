@@ -38,6 +38,7 @@ class ProcessOptions:
     quality: str = "balanced"  # fast | balanced | high
     keyboards_mode: str = "merged"  # merged (piano + other) | piano
     split_guitars: bool = False  # lead (center) vs rhythm (sides)
+    split_rhythm_guitars: bool = True  # the left and right rhythm guitar as two tracks (stemforge_server.sides)
     separate: bool = True  # False = keep existing stems, only re-transcribe
     transcribe: Dict[str, bool] = field(
         default_factory=lambda: {"guitar": True, "lead": True, "bass": True, "keyboards": True, "vocals": True, "drums": True}
@@ -62,6 +63,7 @@ class ProcessOptions:
         if d.get("keyboardsMode") in ("merged", "piano"):
             o.keyboards_mode = d["keyboardsMode"]
         o.split_guitars = bool(d.get("splitGuitars", o.split_guitars))
+        o.split_rhythm_guitars = bool(d.get("splitRhythmGuitars", o.split_rhythm_guitars))
         o.separate = bool(d.get("separate", True))
         o.free_vram_after = bool(d.get("freeVramAfter", False))
         if isinstance(d.get("transcribe"), dict):
@@ -93,6 +95,7 @@ class ProcessOptions:
             "quality": self.quality,
             "keyboardsMode": self.keyboards_mode,
             "splitGuitars": self.split_guitars,
+            "splitRhythmGuitars": self.split_rhythm_guitars,
             "transcribe": dict(self.transcribe),
             "sensitivity": dict(self.sensitivity),
             "minNoteMs": self.min_note_ms,
@@ -623,6 +626,7 @@ def load_stem_22k(path: Path) -> List[np.ndarray]:
 
 
 SIDES = ("left", "right")
+GUITAR_TRACKS = ("guitar1", "guitar2")  # the left / right rhythm guitar tracks split from the guitar stem
 
 
 def side_basic_pitch(stem_path: Path, stem: str, opts: ProcessOptions) -> Optional[List[List[List[float]]]]:
@@ -653,6 +657,7 @@ def transcribe_strings(
     progress: Optional[Progress] = None,
     lo: float = 0,
     hi: float = 0,
+    always_parts: Tuple[str, ...] = (),
 ) -> Tuple[Dict[str, List[List[float]]], Dict[str, Dict[str, float]], Dict[str, Dict[str, List[List[float]]]]]:
     """
     Periodicity-based riff transcription (stemforge_server.riff) for the guitar, lead and bass stems:
@@ -661,7 +666,8 @@ def transcribe_strings(
     and notes that are really leakage from another stem dropped.
 
     Returns (notes per stem, stats per stem, side parts per stem). Side parts ({"left", "right"})
-    exist for a stereo guitar stem whose left and right guitars play different parts.
+    exist for a stereo guitar stem whose left and right guitars play different parts, and for the
+    stems in `always_parts` (a guitar stem that was split into two tracks).
     """
     from . import riff
 
@@ -688,6 +694,7 @@ def transcribe_strings(
             fallback_notes=fallback.get(s),
             bleed_refs=refs,
             side_fallback=lambda s=s: side_basic_pitch(stems_dir / f"{s}.flac", s, opts),
+            always_parts=s in always_parts,
         )
         out[s] = notes
         stats[s] = {key: round(v, 2) for key, v in st.items()}
@@ -901,11 +908,32 @@ def run_job(
             del stems
         else:
             stem_names = list(existing_stems)
+            if any(s in stem_names for s in GUITAR_TRACKS) and (stems_dir / "guitar.flac").exists():
+                stem_names.append("guitar")  # the stem the two guitar tracks are split from
             result["separation"] = None
 
         order = ["vocals", "guitar", "lead", "bass", "drums", "keyboards"]
         stem_names = [s for s in order if s in stem_names]
-        result["stems"] = stem_names
+
+        # ---- the left and right rhythm guitars as two tracks of their own
+        result["guitarSides"] = None
+        for name in GUITAR_TRACKS:
+            (stems_dir / f"{name}.flac").unlink(missing_ok=True)
+            for cached in (project_dir / "cache").glob(f"*/{name}.flac"):
+                cached.unlink(missing_ok=True)
+        if "guitar" in stem_names and opts.split_rhythm_guitars:
+            from . import sides
+
+            g_audio, g_sr = read_stem(stems_dir / "guitar.flac")
+            if sides.should_split(g_audio):
+                progress.set("Splitting the two rhythm guitars", 72)
+                g1, g2, side_info = sides.split_left_right(g_audio, g_sr)
+                write_flac(stems_dir / "guitar1.flac", g1, g_sr)
+                write_flac(stems_dir / "guitar2.flac", g2, g_sr)
+                result["guitarSides"] = side_info
+            del g_audio
+        # mixer tracks: the two guitar tracks replace the guitar stem they were split from
+        result["stems"] = [t for s in stem_names for t in (GUITAR_TRACKS if s == "guitar" and result["guitarSides"] else (s,))]
 
         # ---- melodic transcription (Basic Pitch, CPU/ONNX) with silence gating
         t1 = time.perf_counter()
@@ -944,16 +972,26 @@ def run_job(
         if strings:
             progress.set("Transcribing guitar and bass riffs", 82)
             try:
-                riffs, string_stats, string_parts = transcribe_strings(stems_dir, strings, opts, notes, progress, 82, 88)
+                riffs, string_stats, string_parts = transcribe_strings(
+                    stems_dir, strings, opts, notes, progress, 82, 88, always_parts=("guitar",) if result["guitarSides"] else ()
+                )
                 for s, ns in riffs.items():
                     notes[s] = gate_notes(ns, envs[s], 0.05, opts.silence_gate_db)
                 if "guitar" in string_parts:
-                    # left / right guitars as their own parts, each gated by its own channel
+                    # left / right guitars as their own parts: notes the split gives to the other
+                    # guitar (its leakage into this side) are dropped, then each is gated by its side
+                    from . import sides
+
                     g_audio, g_sr = read_stem(stems_dir / "guitar.flac")
-                    guitar_parts = {
-                        side: gate_notes(string_parts["guitar"][side], envelope_db(g_audio[min(ch, g_audio.shape[0] - 1)], g_sr), 0.05, opts.silence_gate_db)
-                        for ch, side in enumerate(SIDES)
-                    }
+                    owner = sides.Ownership(g_audio, g_sr) if g_audio.shape[0] >= 2 else None
+                    guitar_parts = {}
+                    for ch, side in enumerate(SIDES):
+                        part = string_parts["guitar"][side]
+                        if owner is not None:
+                            part, dropped = owner.filter(part, ch)
+                            string_stats.setdefault("guitar", {})["otherGuitarDropped"] = string_stats.get("guitar", {}).get("otherGuitarDropped", 0) + dropped
+                        guitar_parts[side] = gate_notes(part, envelope_db(g_audio[min(ch, g_audio.shape[0] - 1)], g_sr), 0.05, opts.silence_gate_db)
+                    del owner, g_audio
             except JobCancelled:
                 raise
             except Exception as exc:  # noqa: BLE001

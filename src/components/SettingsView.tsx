@@ -181,6 +181,12 @@ export function SettingsView({
             hint="Separates center-panned guitar (leads, solos) from hard-panned double-tracked rhythm guitars — common in rock and metal mixes."
           />
           <Toggle
+            checked={settings.processing.splitRhythmGuitars}
+            onChange={(v) => set((s) => ({ ...s, processing: { ...s.processing, splitRhythmGuitars: v } }))}
+            label="Give each rhythm guitar its own track"
+            hint="Double-tracked guitars panned left and right become Guitar 1 – Left and Guitar 2 – Right in the mixer, each with its own tab. Where the two play the same note at once they can't be told apart by position, so some of the other guitar stays audible there."
+          />
+          <Toggle
             checked={settings.processing.freeVramAfter}
             onChange={(v) => set((s) => ({ ...s, processing: { ...s.processing, freeVramAfter: v } }))}
             label="Free GPU memory after each song"

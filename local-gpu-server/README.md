@@ -7,13 +7,14 @@ The Python backend for StemForge. It runs on http://127.0.0.1:8000 (this compute
    - **Balanced:** **BS-RoFormer-SW** (6 stems: vocals, guitar, bass, drums, piano, other), 2× overlap.
    - **High:** BS-RoFormer-SW with 4× overlap. Falls back to Demucs (`htdemucs_ft` + `htdemucs_6s`) if the RoFormer weights aren't installed.
    - **Optional lead/rhythm guitar split:** separates the center-panned guitar from the side-panned guitars.
+   - **Left / right rhythm guitar split** (`stemforge_server/sides.py`, on by default): double-tracked guitars on opposite sides become two tracks, `guitar1` (left) and `guitar2` (right). Each STFT bin is modelled as one guitar plus the other guitar's leakage into its side (estimated per third-octave band). Wiener masks then give each guitar its own part of its channel. The two tracks add up exactly to the guitar stem, which is kept for transcription. On the Extol test song the other guitar's notes drop from −15 dB to −23 / −33 dB below the guitar's own note.
 2. **Transcription:**
    - **Guitar / lead / bass:** the riff transcriber (`stemforge_server/riff.py`):
      - one note per pick attack, from a SuperFlux-style onset detector weighted toward pick noise;
      - pitch from the YIN periodicity of the waveform, which is robust to distortion: single note vs. power chord (± octave) vs. not periodic;
      - pitch changes followed inside held notes (legato, slides);
      - left and right guitars transcribed separately, then merged;
-     - when the two guitars play different parts somewhere (stretches where most of their attacks differ in pitch, not just scattered misreadings), each one is also kept as its own part (`transcription.guitarParts`: left / right). Where they play the same riff, both parts get the merged notes; elsewhere each part keeps its own notes, with Basic Pitch run on its own channel for full chords;
+     - each guitar is also kept as its own part (`transcription.guitarParts`: left / right) when the guitar stem is split into two tracks, or when the two guitars play different parts somewhere. Each part keeps its own notes, with Basic Pitch run on its own channel for full chords. In unison sections an attack only one side's detector caught is added to both parts. Notes whose sound the split gives to the other guitar (its leakage into this side) are dropped;
      - bleed from the bass, vocal and drum stems rejected;
      - the tuning's lowest string estimated in a first pass.
      Basic Pitch is used only where the audio isn't periodic (full chords).
@@ -51,12 +52,13 @@ Both columns use the same stems: the true parts with simulated bleed from the ot
 
 Separate guitar parts, measured the same way:
 
-- **Unison songs (1, 2):** no separate parts are made, which is correct.
-- **Twin-guitar song (3):** separate parts are made. Each guitar is scored against its own take:
-  - left guitar: F 0.90 (0.87 without the shared notes in unison sections);
-  - right guitar: F 0.93;
-  - combined rhythm guitar: F 0.93 against both takes together.
+- **Twin-guitar song (3):** each guitar is scored against its own take.
+  - Left guitar: F 0.89 (precision 0.98).
+  - Right guitar: F 0.92.
+  - Combined rhythm guitar: F 0.93 against both takes together.
   - In the harmony sections each part keeps 92–97% of its notes.
+- **The same song with each guitar leaking into the other side at −11 dB** (`--sep oraclexpan`, like the Extol test song): left F 0.87, right F 0.91, combined F 0.91.
+- **Unison songs (1, 2) with a tab per guitar:** F 0.89–0.95 per guitar, against 0.92–0.96 for the combined part, which gets two takes to cross-check.
 
 The unit tests for this logic run with `.\.venv\Scripts\python.exe -m unittest discover -s tests`.
 

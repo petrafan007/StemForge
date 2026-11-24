@@ -28,6 +28,8 @@ export interface AppSettings {
     quality: SeparationQuality;
     keyboardsMode: 'merged' | 'piano';
     splitGuitars: boolean;
+    /** The left and right rhythm guitars as two tracks (and two tabs). */
+    splitRhythmGuitars: boolean;
     freeVramAfter: boolean;
     transcribe: Record<TranscribeTarget, boolean>;
   };
@@ -146,6 +148,7 @@ export function defaultSettings(): AppSettings {
       quality: 'balanced',
       keyboardsMode: 'merged',
       splitGuitars: false,
+      splitRhythmGuitars: true,
       freeVramAfter: false,
       transcribe: { guitar: true, lead: true, bass: true, keyboards: true, vocals: true, drums: true },
     },
@@ -234,6 +237,7 @@ export function processingPayload(settings: AppSettings, extra: Record<string, u
     quality: settings.processing.quality,
     keyboardsMode: settings.processing.keyboardsMode,
     splitGuitars: settings.processing.splitGuitars,
+    splitRhythmGuitars: settings.processing.splitRhythmGuitars,
     freeVramAfter: settings.processing.freeVramAfter,
     transcribe: settings.processing.transcribe,
     sensitivity: t.sensitivity,

@@ -155,6 +155,7 @@ def _start_job(pid: str, opts: ProcessOptions, *, is_new: bool) -> None:
             src["durationSec"] = result["durationSec"]
             proc = doc.setdefault("processing", {})
             proc["options"] = opts.to_dict()
+            proc["guitarSides"] = result.get("guitarSides")  # left / right rhythm guitar split (None = not split)
             if result.get("separation"):
                 proc.update(
                     {

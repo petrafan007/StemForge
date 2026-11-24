@@ -8,6 +8,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from stemforge_server.riff import (  # noqa: E402
@@ -95,7 +97,7 @@ class AgreementTest(unittest.TestCase):
 
 
 class SidePartsTest(unittest.TestCase):
-    def test_unison_sections_share_the_merged_notes_and_harmonies_keep_their_own(self):
+    def _unison_then_harmony(self):
         unison = [(40, 47)] * 40
         left_unison = list(unison)
         left_unison[5] = (40,)  # the left take only shows the root here; the right shows the power chord
@@ -103,16 +105,29 @@ class SidePartsTest(unittest.TestCase):
         left = riff(left_unison + melody)
         right = riff(unison + third, offset=0.02)
         del right[12]  # an attack the right side's onset detector missed in the unison part
+        return left, right, melody, third
+
+    def test_unison_sections_lend_missed_attacks_but_never_the_other_guitars_notes(self):
+        left, right, melody, third = self._unison_then_harmony()
         lp, rp = side_parts(left, right)
-        n_unison = len(unison)
-        # unison: both parts get the merged notes, including the attack only one side heard
+        # each guitar keeps its own notes at attacks both heard (no union with the other guitar)...
+        self.assertEqual(lp[5].pitches, (40,))
+        self.assertEqual(rp[5].pitches, (40, 47))
+        # ...and an attack only one side heard in a unison section goes to both parts
         self.assertEqual(len(lp), len(rp))
-        self.assertEqual(lp[5].pitches, (40, 47))
         self.assertEqual(rp[12].pitches, (40, 47))
-        self.assertEqual([e.pitches for e in lp[: n_unison - 4]], [e.pitches for e in rp[: n_unison - 4]])
         # harmony: each part keeps its own notes
         self.assertEqual([e.pitches for e in lp[-8:]], melody[-8:])
         self.assertEqual([e.pitches for e in rp[-8:]], third[-8:])
+
+    def test_unison_modes(self):
+        left, right, _, _ = self._unison_then_harmony()
+        lp, rp = side_parts(left, right, unison="notes")  # merged notes in unison sections
+        self.assertEqual(lp[5].pitches, (40, 47))
+        self.assertEqual(rp[12].pitches, (40, 47))
+        lp, rp = side_parts(left, right, unison="off")  # strictly each side's own detections
+        self.assertEqual(lp[5].pitches, (40,))
+        self.assertEqual(len(rp), len(right))
 
     def test_one_guitar_alone_stays_in_its_own_part(self):
         intro = [(40,), (40,), (43,), (45,)] * 12  # left guitar plays the intro alone
@@ -142,6 +157,59 @@ class SidePartsTest(unittest.TestCase):
         for part in side_parts(left, right):
             for a, b in zip(part, part[1:]):
                 self.assertLessEqual(a.end, b.start + 1e-9)
+
+
+def tone(midi, dur, sr=22050, partials=6):
+    t = np.arange(int(dur * sr)) / sr
+    f = 440.0 * 2 ** ((midi - 69) / 12)
+    return sum(np.sin(2 * np.pi * h * f * t) / h for h in range(1, partials + 1)).astype(np.float32)
+
+
+class SplitTest(unittest.TestCase):
+    """The left / right split on two synthetic guitars that leak into each other's side (-12 dB)."""
+
+    def setUp(self):
+        self.sr = 22050
+        leak = 10 ** (-12 / 20)
+        a = np.concatenate([tone(40, 1.0), tone(43, 1.0)])  # left guitar: E2, then G2
+        b = np.concatenate([tone(47, 1.0), np.zeros(self.sr, np.float32)])  # right guitar: B2, then rests
+        rng = np.random.default_rng(1)
+        smear = lambda x: np.convolve(x, rng.normal(0, 1, 200) / np.sqrt(200), mode="same").astype(np.float32)  # noqa: E731
+        self.stereo = np.stack([a + leak * smear(b), b + leak * smear(a)])
+        self.a, self.b = a, b
+
+    def test_tracks_add_up_to_the_stem_and_hold_their_own_guitar(self):
+        from stemforge_server import sides
+
+        g1, g2, info = sides.split_left_right(self.stereo, self.sr)
+        np.testing.assert_allclose(g1 + g2, self.stereo, atol=1e-5)
+        self.assertTrue(sides.should_split(self.stereo))
+
+        def level(x, midi, t0):
+            seg = x[int(t0 * self.sr) : int((t0 + 0.4) * self.sr)]
+            spec = np.abs(np.fft.rfft(seg * np.hanning(len(seg))))
+            k = int(round(440.0 * 2 ** ((midi - 69) / 12) * len(seg) / self.sr))
+            return 20 * np.log10(spec[k - 1 : k + 2].max() + 1e-9)
+
+        # the right guitar's B2 in the left guitar's track: -12 dB of leakage before, far less after
+        before = level(self.stereo[0], 47, 0.3) - level(self.stereo[0], 40, 0.3)
+        after = level(g1[0] + g1[1], 47, 0.3) - level(g1[0] + g1[1], 40, 0.3)
+        self.assertLess(after, before - 10)
+        # while the right guitar rests, its track is (nearly) silent: the left guitar's leak moved over
+        rest = slice(int(1.2 * self.sr), int(1.9 * self.sr))
+        self.assertLess(float(np.sum(g2[:, rest] ** 2)), 0.05 * float(np.sum(self.stereo[1, rest] ** 2)))
+
+    def test_ownership_drops_the_other_guitars_leak_from_a_part(self):
+        from stemforge_server import sides
+
+        owner = sides.Ownership(self.stereo, self.sr)
+        self.assertGreater(owner.share(0, 0.1, 0.9, 40), 0.8)  # the left guitar's own E2
+        self.assertGreater(owner.share(1, 0.1, 0.9, 47), 0.8)  # the right guitar's own B2
+        # in the right channel during its rest, the "G2" is the left guitar leaking in
+        self.assertLess(owner.share(1, 1.1, 1.9, 43), 0.3)
+        kept, dropped = owner.filter([[1.1, 1.9, 43, 90], [0.1, 0.9, 47, 100]], 1)
+        self.assertEqual(dropped, 1)
+        self.assertEqual(kept, [[0.1, 0.9, 47, 100]])
 
 
 if __name__ == "__main__":

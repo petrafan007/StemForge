@@ -15,7 +15,7 @@ import {
 import { separateStereoStemsStft, type SeparatedStemsPcm } from './stftSeparator';
 
 /** The browser STFT engine produces these five stems. */
-type BrowserStemId = Exclude<StemId, 'lead'>;
+type BrowserStemId = Exclude<StemId, 'lead' | 'guitar1' | 'guitar2'>;
 
 export const ACCEPTED_AUDIO_EXTENSIONS = ['.mp3', '.wav', '.flac', '.ogg', '.opus', '.m4a', '.aac', '.wma', '.aif', '.aiff'];
 export const ACCEPTED_VIDEO_EXTENSIONS = ['.mp4', '.m4v', '.mov', '.mkv', '.webm', '.avi'];

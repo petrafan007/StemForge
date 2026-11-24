@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Download, MicOff, RotateCcw, Volume2, VolumeX } from 'lucide-react';
-import { STEM_LIST, projectStemIds, stemLabel, type SongProject, type StemId, type StemMixerState } from '../types/music';
+import { GUITAR_STEM_IDS, STEM_LIST, projectStemIds, stemLabel, type SongProject, type StemId, type StemMixerState } from '../types/music';
 
 interface MixerViewProps {
   project: SongProject;
@@ -133,7 +133,7 @@ export function MixerView({
   const isVocalsOnly = mixer.vocals.solo && others(['vocals']).every((id) => !mixer[id].solo);
   const isRhythm =
     !mixer.bass.muted && !mixer.drums.muted && others(['bass', 'drums']).every((id) => mixer[id].muted);
-  const isGuitars = others(['guitar', 'lead']).every((id) => mixer[id].muted) && !mixer.guitar.muted;
+  const isGuitars = others(GUITAR_STEM_IDS).every((id) => mixer[id].muted) && present.some((id) => GUITAR_STEM_IDS.includes(id) && !mixer[id].muted);
   const isAllActive = !anySolo && present.every((id) => !mixer[id].muted);
 
   const progress = project.duration > 0 ? Math.min(1, currentTime / project.duration) : 0;
@@ -281,7 +281,7 @@ export function MixerView({
                       onClick={() => onUpdateStem(stemMeta.id, { muted: !state.muted })}
                       aria-pressed={state.muted}
                       aria-label={`Mute ${label}`}
-                      title={`Mute ${label} (Key ${stemMeta.shortcut})`}
+                      title={`Mute ${label} (Key ${present.indexOf(stemMeta.id) + 1})`}
                       className={`w-8 h-8 rounded text-xs font-mono font-semibold border transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-500 ${
                         state.muted
                           ? 'bg-rose-500/25 border-rose-500 text-rose-200'

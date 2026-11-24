@@ -34,7 +34,7 @@ from .settings import projects_dir
 SFG_MIMETYPE = "application/x-stemforge-project"
 PROJECT_FORMAT = "stemforge-project"
 PROJECT_VERSION = 1
-STEM_IDS = ("vocals", "guitar", "lead", "bass", "drums", "keyboards")
+STEM_IDS = ("vocals", "guitar", "guitar1", "guitar2", "lead", "bass", "drums", "keyboards")
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,150}$")
 _io_lock = threading.RLock()
@@ -208,7 +208,8 @@ def pack_sfg(project_id: str, include_original: bool = True) -> Path:
         orig = original_path(project_id)
         packed["packedOriginal"] = bool(include_original and orig)
         z.writestr("project.json", json.dumps(packed, ensure_ascii=False, indent=1), compress_type=zipfile.ZIP_DEFLATED)
-        for stem in doc.get("stems") or []:
+        # the listed tracks plus the stems they come from (the guitar stem behind the two guitar tracks)
+        for stem in [s for s in STEM_IDS if s in (doc.get("stems") or []) or (d / "stems" / f"{s}.flac").exists()]:
             sp = d / "stems" / f"{stem}.flac"
             if sp.is_file():
                 z.write(sp, f"stems/{stem}.flac", compress_type=zipfile.ZIP_STORED)

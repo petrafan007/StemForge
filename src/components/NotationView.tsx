@@ -422,7 +422,7 @@ export function NotationView({
                 onClick={() => onChangePart(p)}
                 title={
                   p === 'guitar1' || p === 'guitar2'
-                    ? `The ${p === 'guitar1' ? 'left' : 'right'}-panned guitar on its own. Where both guitars play the same riff it matches the ${partLabel(project, 'guitar')} tab.`
+                    ? `Only the ${p === 'guitar1' ? 'left' : 'right'}-panned guitar's own notes. ${partLabel(project, 'guitar')} shows both guitars together.`
                     : undefined
                 }
                 className={`px-3.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${

@@ -1,4 +1,11 @@
-export type StemId = 'vocals' | 'guitar' | 'lead' | 'bass' | 'drums' | 'keyboards';
+/**
+ * Audio tracks. 'guitar1' / 'guitar2' are the left and right rhythm guitars split from the guitar stem
+ * (the server lists them instead of 'guitar' when the two guitars sit on opposite sides).
+ */
+export type StemId = 'vocals' | 'guitar' | 'guitar1' | 'guitar2' | 'lead' | 'bass' | 'drums' | 'keyboards';
+
+/** Guitar tracks (for presets such as "Guitars only"). */
+export const GUITAR_STEM_IDS: StemId[] = ['guitar', 'guitar1', 'guitar2', 'lead'];
 
 /** Stems that get melodic (pitched) transcription. */
 export type MelodicStemId = 'keyboards' | 'guitar' | 'lead' | 'bass' | 'vocals';
@@ -75,6 +82,22 @@ export const STEM_LIST: StemMeta[] = [
     dimColor: 'rgba(245, 158, 11, 0.25)',
     shortcut: '2',
     role: 'Rhythm & Lead',
+  },
+  {
+    id: 'guitar1',
+    label: 'Guitar 1 – Left',
+    color: '#FACC15',
+    dimColor: 'rgba(250, 204, 21, 0.25)',
+    shortcut: '',
+    role: 'Left rhythm guitar',
+  },
+  {
+    id: 'guitar2',
+    label: 'Guitar 2 – Right',
+    color: '#F59E0B',
+    dimColor: 'rgba(245, 158, 11, 0.25)',
+    shortcut: '',
+    role: 'Right rhythm guitar',
   },
   {
     id: 'lead',
@@ -230,5 +253,6 @@ export function projectStemIds(project: SongProject): StemId[] {
 /** Display label (when the guitar is split, the 'guitar' stem holds the rhythm guitars). */
 export function stemLabel(id: StemId, project?: SongProject | null): string {
   if (id === 'guitar' && project?.stems.lead) return 'Rhythm Guitar';
+  if ((id === 'guitar1' || id === 'guitar2') && project?.stems.lead) return `Rhythm ${STEM_LIST.find((s) => s.id === id)?.label}`;
   return STEM_LIST.find((s) => s.id === id)?.label ?? id;
 }

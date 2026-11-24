@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { MidiNoteEvent, SongProject, StemTrackData } from '../types/music';
+import { GUITAR_STEM_IDS, projectStemIds, stemLabel, type MidiNoteEvent, type SongProject, type StemTrackData } from '../types/music';
 import { buildAsciiTab, buildMusicXml, hasGuitarSides, notationParts, partLabel, partNotes, resolveTunings } from './scoreExport';
 import { GUITAR_TUNINGS, mapNotesToTab } from './notationEngine';
 
@@ -75,6 +75,20 @@ test('each guitar part is tabbed with the shared tuning and fingered as a single
   assert.deepEqual(left.map((n) => `${n.stringIndex}:${n.fret}`), ['5:0', '5:0', '5:3']);
   assert.deepEqual(right.map((n) => n.midi), [47, 47, 50]);
   assert.ok(right.every((n) => n.fret <= 5), 'the fifth-up riff stays in the first position');
+});
+
+test('the two rhythm guitar tracks replace the guitar track in the mixer and are labelled by side', () => {
+  const stem = {} as StemTrackData;
+  const split = { ...project({ lead: true, sides: true }), stems: { vocals: stem, guitar1: stem, guitar2: stem, lead: stem, bass: stem } };
+  assert.deepEqual(projectStemIds(split), ['vocals', 'guitar1', 'guitar2', 'lead', 'bass']);
+  assert.equal(stemLabel('guitar1', split), 'Rhythm Guitar 1 – Left');
+  assert.equal(stemLabel('guitar2', split), 'Rhythm Guitar 2 – Right');
+  const noLead = { ...split, stems: { guitar1: stem, guitar2: stem } };
+  assert.equal(stemLabel('guitar1', noLead), 'Guitar 1 – Left');
+  assert.ok(GUITAR_STEM_IDS.includes('guitar2'));
+  // the tab parts line up with the tracks
+  assert.equal(partLabel(split, 'guitar1'), stemLabel('guitar1', split));
+  assert.equal(partLabel(split, 'guitar2'), stemLabel('guitar2', split));
 });
 
 test('MusicXML and ASCII tab export the left / right guitars as their own parts', () => {

@@ -1,7 +1,7 @@
 """
 Scores guitar / bass transcription against the synthetic answer key.
 
-  python evaluate.py <data_dir> [--sep htdemucs|roformer|oracle|oraclebleed] [--methods current,riff]
+  python evaluate.py <data_dir> [--sep htdemucs|roformer|oracle|oraclebleed|oraclexpan] [--methods current,riff,riffsplit]
                      [--parts rhythm,left,right,lead,bass,full]
 
 Parts: rhythm = both rhythm guitars, left / right = each rhythm guitar on its own (scored against the
@@ -61,15 +61,33 @@ def score(ref: list, est: list, tol: float = 0.05) -> dict:
     }
 
 
+def leak_sides(rhythm: np.ndarray, sr: int, level_db: float = -11.0, seed: int = 7) -> np.ndarray:
+    """Each rhythm guitar leaks into the other side at `level_db`, smeared like a room / reverb /
+    separation leak (not a clean pan): like the Extol test song (-11 dB, incoherent)."""
+    from scipy.signal import fftconvolve
+
+    rng = np.random.default_rng(seed)
+    n = int(0.06 * sr)
+    out = rhythm.copy()
+    g = 10 ** (level_db / 20)
+    for src, dst in ((0, 1), (1, 0)):
+        ir = rng.normal(0, 1, n) * np.exp(-np.arange(n) / (0.015 * sr))
+        ir /= np.sqrt(np.sum(ir**2))
+        out[:, dst] += g * fftconvolve(rhythm[:, src], ir)[: len(rhythm)]
+    return out
+
+
 def separate_song(song_dir: Path, sep: str) -> Path:
     out = song_dir / f"stems_{sep}"
     if (out / "guitar.flac").exists():
         return out
-    if sep == "oraclebleed":
+    if sep in ("oraclebleed", "oraclexpan"):
         out.mkdir(exist_ok=True)
         t = song_dir / "stems_true"
         tr = {n: sf.read(t / f"{n}.flac", always_2d=True)[0] for n in ("rhythm", "lead", "bass", "drums", "vocals")}
         sr = 44100
+        if sep == "oraclexpan":
+            tr["rhythm"] = leak_sides(tr["rhythm"], sr)
         gtr = tr["rhythm"] + 0.15 * tr["bass"] + 0.12 * tr["drums"] + 0.12 * tr["vocals"] + 0.15 * tr["lead"]
         sf.write(out / "guitar.flac", gtr, sr, subtype="PCM_24")
         sf.write(out / "lead.flac", tr["lead"] + 0.2 * tr["rhythm"] + 0.12 * tr["vocals"] + 0.1 * tr["bass"], sr, subtype="PCM_24")
@@ -146,12 +164,24 @@ def load_channels(path, sr=22050):
 _riff_cache: dict = {}
 
 
+def split_sides(path: Path, sr: int = 22050):
+    """Each rhythm guitar's own signal from the left / right split (stemforge_server.sides)."""
+    import librosa
+    from stemforge_server import sides
+    y, file_sr = sf.read(path, always_2d=True, dtype="float32")
+    g1, g2, _ = sides.split_left_right(y.T, file_sr)
+    return [librosa.resample(g1[0], orig_sr=file_sr, target_sr=sr), librosa.resample(g2[1], orig_sr=file_sr, target_sr=sr)]
+
+
 @method("riff")
-def riff_method(stems: Path, part: str):
-    """New periodicity-based transcriber (left / right: its separate parts when it makes them)."""
+def riff_method(stems: Path, part: str, split: bool = False, share: str = "attacks", owned: bool = True):
+    """New periodicity-based transcriber (left / right: its separate parts when it makes them).
+    split: analyse each guitar's track from the left / right split instead of the raw channels.
+    share: what the separate parts share in unison sections (riff.side_parts: notes / attacks / off).
+    owned: drop notes of a separate part that the left / right split gives to the other guitar."""
     from stemforge_server import riff
     stem = {"rhythm": "guitar", "left": "guitar", "right": "guitar", "lead": "lead", "bass": "bass", "full": "guitar_full"}[part]
-    key = (str(stems), stem)
+    key = (str(stems), stem, split, share, owned)
     if key not in _riff_cache:
         chans = load_channels(stems / f"{stem}.flac")
         others = {"bass": ["guitar"], "lead": ["guitar", "bass"]}.get(part, ["bass"])
@@ -161,13 +191,59 @@ def riff_method(stems: Path, part: str):
             refs.append(np.mean(load_channels(vox), axis=0))
         refs = refs or None
         kind = {"guitar": "guitar", "guitar_full": "guitar", "lead": "lead", "bass": "bass"}[stem]
-        _riff_cache[key] = riff.transcribe_stem(kind, chans, bleed_refs=refs)
+        own = split_sides(stems / f"{stem}.flac") if split and kind == "guitar" else None
+        _riff_cache[key] = riff.transcribe_stem(kind, chans, bleed_refs=refs, side_signals=own, unison=share)
         notes, st, sides = _riff_cache[key]
+        if owned and sides:
+            from stemforge_server.sides import Ownership
+            y, file_sr = sf.read(stems / f"{stem}.flac", always_2d=True, dtype="float32")
+            ow = Ownership(y.T, file_sr)
+            dropped = 0
+            for k, side in enumerate(("left", "right")):
+                sides[side], d = ow.filter(sides[side], k)
+                dropped += d
+            st["ownershipDropped"] = dropped
         print("     stats", {k: int(v) for k, v in st.items()}, "| separate left/right parts:", "yes" if sides else "no")
     notes, st, sides = _riff_cache[key]
     if part in ("left", "right"):
         return sides[part] if sides else notes
     return notes
+
+
+@method("riff_own")
+def riff_own(stems: Path, part: str):
+    """Separate parts keep only each guitar's own notes, also in unison sections."""
+    return riff_method(stems, part, split=False, share="off", owned=False)
+
+
+@method("riff_notes")
+def riff_notes(stems: Path, part: str):
+    """Separate parts share the merged notes in unison sections (previous behaviour)."""
+    return riff_method(stems, part, split=False, share="notes", owned=False)
+
+
+@method("riff_owned")
+def riff_owned(stems: Path, part: str):
+    """Separate parts: own notes only, minus notes the left / right split gives to the other guitar."""
+    return riff_method(stems, part, split=False, share="off", owned=True)
+
+
+@method("riff_shared_owned")
+def riff_shared_owned(stems: Path, part: str):
+    """Separate parts with unison sharing, minus notes the split gives to the other guitar."""
+    return riff_method(stems, part, split=False, share="notes", owned=True)
+
+
+@method("riffsplit")
+def riff_split(stems: Path, part: str):
+    """Each guitar transcribed from its own track (left / right split)."""
+    return riff_method(stems, part, split=True, share="notes")
+
+
+@method("riffsplit_own")
+def riff_split_own(stems: Path, part: str):
+    """Left / right split, and the separate parts keep only each guitar's own notes."""
+    return riff_method(stems, part, split=True, share="off")
 
 
 DISTORTION_HARMONICS = {19, 24, 28, 31, 36}

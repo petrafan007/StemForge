@@ -579,7 +579,9 @@ def _part_regions(times: np.ndarray, paired: np.ndarray, confident: np.ndarray, 
     return out
 
 
-def side_parts(a: Sequence[NoteEvent], b: Sequence[NoteEvent], window: float = 0.05, stats: Optional[Dict[str, float]] = None) -> Tuple[List[NoteEvent], List[NoteEvent]]:
+def side_parts(
+    a: Sequence[NoteEvent], b: Sequence[NoteEvent], window: float = 0.05, stats: Optional[Dict[str, float]] = None, unison: str = "attacks"
+) -> Tuple[List[NoteEvent], List[NoteEvent]]:
     """
     The two performances as separate parts (copies of the events).
 
@@ -608,7 +610,7 @@ def side_parts(a: Sequence[NoteEvent], b: Sequence[NoteEvent], window: float = 0
     for ((s, i), p), region in zip(groups, regions):
         e = seqs[s][i]
         f = seqs[p[0]][p[1]] if p is not None else None
-        if region == "unison":
+        if region == "unison" and (unison == "notes" or (unison == "attacks" and f is None)):
             merged = _merge_pair(e, f, {}) if f is not None else replace(e)
             parts[0].append(merged)
             parts[1].append(replace(merged))
@@ -661,16 +663,26 @@ def transcribe_stem(
     fallback_notes: Optional[List[List[float]]] = None,
     bleed_refs: Optional[Sequence[np.ndarray]] = None,
     side_fallback: Optional[Callable[[], Optional[Sequence[List[List[float]]]]]] = None,
+    side_signals: Optional[Sequence[np.ndarray]] = None,
+    unison: str = "attacks",
+    always_parts: bool = False,
 ) -> Tuple[List[List[float]], Dict[str, float], Optional[SideParts]]:
     """
     Guitar / lead / bass stem (channels at 22.05 kHz) -> (notes [[start, end, midi, velocity]], stats,
     side parts). A stereo guitar stem with different left / right content (double-tracked or harmony
     guitars) is transcribed per side and the two performances are merged into `notes`.
 
+    side_signals: each guitar's own sound (two mono signals at 22.05 kHz, e.g. its track from the
+    left / right split, stemforge_server.sides), analysed instead of the raw left / right channels,
+    in which each guitar also hears the other one leaking in.
+
     Side parts ({"left": notes, "right": notes}) are returned only when the two guitars play different
     parts somewhere (see side_agreement); otherwise None. side_fallback, if given, returns spectral
-    (Basic Pitch) notes for the left and right channel separately: the side parts then use each side's
+    (Basic Pitch) notes for the left and right guitar separately: the side parts then use each side's
     own notes where the audio is not periodic, instead of fallback_notes (heard on both sides at once).
+    unison: see side_parts.
+    always_parts: return side parts whenever the stem is transcribed per side (e.g. the stem was split
+    into a track per guitar), not only when the guitars play different parts.
     """
     cfg = STEM_SETTINGS[stem]
     chans = [np.asarray(c, dtype=np.float64) for c in channels if len(c)]
@@ -686,11 +698,12 @@ def transcribe_stem(
         retrigger_db=cfg.get("retrigger_db"),
     )
     lo = float(cfg["lo"])
-    if cfg["mono"] or len(chans) == 1 or float(np.corrcoef(chans[0][::64], chans[1][::64])[0, 1]) > 0.97:
+    own = [np.asarray(s, dtype=np.float64) for s in side_signals] if side_signals is not None and len(side_signals) == 2 else None
+    if own is None and (cfg["mono"] or len(chans) == 1 or float(np.corrcoef(chans[0][::64], chans[1][::64])[0, 1]) > 0.97):
         sides = [np.mean(chans, axis=0)]
         ons = [pick_onsets(onset_envelope(sides[0].astype(np.float32)), sensitivity, cfg["min_ioi"])]
     else:
-        sides = chans[:2]
+        sides = own if own is not None else chans[:2]
         envs = [onset_envelope(c.astype(np.float32)) for c in sides]
         raw = [pick_onsets(e, sensitivity, cfg["min_ioi"]) for e in envs]
         # an attack heard on one guitar is looked for (with a lower threshold) on the other one too
@@ -724,11 +737,11 @@ def transcribe_stem(
     if len(side_events) == 2:
         agreement = side_agreement(side_events[0], side_events[1])
         stats.update(agreement)
-        if sides_differ(agreement):
-            own = side_fallback() if side_fallback is not None else None
-            if own is not None and len(own) == 2:
-                side_events = [evs for evs, _ in per_side(used_lo, list(own))]
-            left, right = side_parts(side_events[0], side_events[1], stats=stats)
+        if sides_differ(agreement) or always_parts:
+            own_fallback = side_fallback() if side_fallback is not None else None
+            if own_fallback is not None and len(own_fallback) == 2:
+                side_events = [evs for evs, _ in per_side(used_lo, list(own_fallback))]
+            left, right = side_parts(side_events[0], side_events[1], stats=stats, unison=unison)
             parts = {"left": events_to_notes(left), "right": events_to_notes(right)}
             stats["sideSplit"] = 1.0
     return events_to_notes(events), stats, parts

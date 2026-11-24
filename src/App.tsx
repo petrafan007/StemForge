@@ -11,7 +11,7 @@ import type {
   StemMixerState,
   WorkspaceView,
 } from './types/music';
-import { ALL_STEM_IDS, projectStemIds } from './types/music';
+import { ALL_STEM_IDS, GUITAR_STEM_IDS, projectStemIds } from './types/music';
 import { MultiStemAudioEngine } from './audio/audioEngine';
 import { DEMO_SONG_LIST, buildDemoSongProject, type DemoSongBlueprint } from './audio/demoSongs';
 import { FILE_INPUT_ACCEPT, processUploadedAudioFile } from './audio/stemSeparator';
@@ -60,6 +60,8 @@ function createDefaultMixer(): Record<StemId, StemMixerState> {
   return {
     vocals: { volume: 1, muted: false, solo: false, pan: 0 },
     guitar: { volume: 1, muted: false, solo: false, pan: -0.15 },
+    guitar1: { volume: 1, muted: false, solo: false, pan: 0 },
+    guitar2: { volume: 1, muted: false, solo: false, pan: 0 },
     lead: { volume: 1, muted: false, solo: false, pan: 0.1 },
     bass: { volume: 1, muted: false, solo: false, pan: 0 },
     drums: { volume: 1, muted: false, solo: false, pan: 0 },
@@ -73,6 +75,13 @@ function mixerFromState(saved: ProjectState['mixer']): Record<StemId, StemMixerS
   for (const id of ALL_STEM_IDS) {
     const s = saved[id];
     if (s && typeof s.volume === 'number') base[id] = { volume: s.volume, muted: Boolean(s.muted), solo: Boolean(s.solo), pan: Number(s.pan) || 0 };
+  }
+  // a song re-analyzed into two guitar tracks keeps the old guitar track's level, mute and solo
+  const g = saved.guitar;
+  if (g && typeof g.volume === 'number') {
+    for (const id of ['guitar1', 'guitar2'] as const) {
+      if (!saved[id]) base[id] = { volume: g.volume, muted: Boolean(g.muted), solo: Boolean(g.solo), pan: 0 };
+    }
   }
   return base;
 }
@@ -525,7 +534,7 @@ export default function App() {
       else if (preset === 'rhythm') {
         for (const id of ALL_STEM_IDS) if (id !== 'bass' && id !== 'drums') next[id].muted = true;
       } else if (preset === 'guitars') {
-        for (const id of ALL_STEM_IDS) if (id !== 'guitar' && id !== 'lead') next[id].muted = true;
+        for (const id of ALL_STEM_IDS) if (!GUITAR_STEM_IDS.includes(id)) next[id].muted = true;
       }
       engineRef.current?.setMixerState(next);
       return next;

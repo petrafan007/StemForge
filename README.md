@@ -18,9 +18,10 @@ Free, local-first stem separator, MIDI studio, and guitar/bass tab and sheet mus
 - **In-sync playback:** the playhead and the highlighted tab notes follow what you hear. The audio device's output latency is measured and compensated, notes light up at their real attack, and **Settings → Playback Sync** adds a manual delay for Bluetooth headphones.
 - **Tabs and sheet music:**
   - Whole-part tab fingering: power-chord shapes, few position shifts in fast passages, and the same riff fingered the same way every time it repeats.
-  - **Guitar 1 – Left / Guitar 2 – Right:** when the two rhythm guitars play different parts (harmonies, a riff doubled a fifth up, counter-riffs), each one also gets its own tab, sheet music, MusicXML part, text tab and MIDI track. Where both guitars play the same riff, the two parts show the same notes as the combined Rhythm Guitar tab.
+  - **Guitar 1 – Left / Guitar 2 – Right:** double-tracked rhythm guitars each get their own tab, sheet music, MusicXML part, text tab and MIDI track, next to the combined Rhythm Guitar tab. Each guitar's tab holds only that guitar's own notes: notes the other guitar plays (its sound leaking into this side) are left out.
   - **Auto-detected tunings:** Standard, Drop D, Eb, D, Drop C#, Drop C, C# and C standard, Drop B, B standard, Drop A, 7- and 8-string, and 4- or 5-string bass.
   - Chord charts (including power chords) and on-screen sheet music.
+- **Two rhythm guitar tracks:** double-tracked rhythm guitars panned left and right are split into **Guitar 1 – Left** and **Guitar 2 – Right** mixer tracks, so you can solo either one. The two tracks add up exactly to the original guitar stem. Where the guitars play different notes, the other guitar is removed from each track; where both play the same note at the same moment they can't be told apart by position, so some of the other guitar stays audible there. Can be turned off in **Settings → Processing**.
 - **Mixer:** mute, solo, volume, pan, and presets. **Key change** uses true pitch shifting (Rubber Band), so the tempo stays the same. Speed control and a metronome on the beat grid are included.
 - **Projects that never get lost:**
   - Every imported song is saved as a draft in `Documents\StemForge\Projects`, and changes autosave.
@@ -80,6 +81,7 @@ Open **Settings → Genre & Transcription → Metal**, and turn on **Split lead 
 │   ├── stemforge_server/
 │   │   ├── pipeline.py           # RoFormer / Demucs separation, guitar split, transcription, drums, tempo
 │   │   ├── riff.py               # guitar / bass riff transcriber (pick attacks + periodicity)
+│   │   ├── sides.py              # left / right rhythm guitar split into two tracks
 │   │   ├── beats.py              # Beat This! beats & downbeats -> tempo map
 │   │   ├── projects.py           # Project library + .sfg pack/unpack
 │   │   ├── export.py             # Mixdown + FFmpeg encoding (Audacity-style options)
