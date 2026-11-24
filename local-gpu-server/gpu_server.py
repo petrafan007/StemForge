@@ -216,6 +216,8 @@ def health():
         "version": SERVER_VERSION,
         "model": "bs_roformer_sw" if pipeline.roformer_available() else "htdemucs_6s",
         "separators": ["bs_roformer_sw", "htdemucs_6s"] if pipeline.roformer_available() else ["htdemucs_6s"],
+        "separator_choices": pipeline.separators_status(),
+        "chord_transcriber_choices": pipeline.chord_transcribers_status(),
         "device": pipeline.get_device(),
         "cuda": pipeline.get_device() == "cuda",
         "gpu": pipeline.get_gpu_name(),

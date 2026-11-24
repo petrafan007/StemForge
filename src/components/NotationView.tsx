@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, Download, FileMusic, Minus, Plus, Printer } from 'lucide-react';
+import { Check, Copy, Download, FileMusic, Minus, Pencil, Plus, Printer, Redo2, Undo2 } from 'lucide-react';
 import type {
   BassTuningId,
   ChordEvent,
@@ -27,6 +27,8 @@ import { slugifyFilename, triggerTextDownload } from '../utils/download';
 import { layoutTab, type TabLayoutNote } from '../audio/tabLayout';
 import { keyToFifths } from '../audio/musicXml';
 import { TabStaff } from './TabStaff';
+import { useTabEditor } from './useTabEditor';
+import type { PartEdit, TabEdits } from '../audio/tabEdits';
 import { ScoreView, printScore } from './ScoreView';
 
 type TabDetail = '1/8' | '1/16' | '1/32' | '1/8T' | '1/16T';
@@ -71,6 +73,10 @@ interface NotationViewProps {
   maxFret: number;
   accidentals: 'auto' | 'sharps' | 'flats';
   onOpenExport?: () => void;
+  /** The automatic transcription (before the user's tab corrections). */
+  autoProject?: SongProject;
+  tabEdits?: TabEdits;
+  onTabEdit?: (part: NotationPart, edit: PartEdit | undefined) => void;
 }
 
 function ChordFretboardDiagram({
@@ -234,6 +240,9 @@ export function NotationView({
   maxFret,
   accidentals,
   onOpenExport,
+  autoProject,
+  tabEdits,
+  onTabEdit,
 }: NotationViewProps) {
   const availableParts = notationParts(project);
   const part: NotationPart = availableParts.includes(requestedPart) ? requestedPart : 'guitar';
@@ -357,12 +366,28 @@ export function NotationView({
     [tabNotes, prefs.detail, prefs.colWidth, prefs.minVelocity, beatsPerMeasure, totalBeats, tabWidth, tuning, transposedChords]
   );
 
+  const editor = useTabEditor({
+    project,
+    autoProject: autoProject ?? project,
+    part,
+    edit: tabEdits?.[part],
+    onTabEdit: onTabEdit ?? (() => undefined),
+    layout: tabLayout,
+    tuning,
+    transpose,
+    maxFret,
+    beatsPerMeasure,
+    onPreviewNote,
+  });
+  const partEdit = tabEdits?.[part];
+
   const handleTabNoteClick = useCallback(
     (n: TabLayoutNote) => {
+      if (editor.editing) return editor.selectNote(n);
       onPreviewNote(n.midi, 0.4);
       onSeek(Math.max(0, beatToTime(project, n.col * DETAIL_GRID[prefs.detail])));
     },
-    [onPreviewNote, onSeek, project, prefs.detail]
+    [editor, onPreviewNote, onSeek, project, prefs.detail]
   );
   const handleSeekBeat = useCallback((beat: number) => onSeek(Math.max(0, beatToTime(project, beat))), [onSeek, project]);
 
@@ -610,6 +635,17 @@ export function NotationView({
                 {tuning.label} · {tabLayout.noteCount} notes
                 {tabLayout.mergedCount > 0 ? ` (${tabLayout.mergedCount} duplicates merged)` : ''}
               </span>
+              {partEdit && (
+                <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-medium" title="This part shows your corrected tab (tabs, sheet music, MIDI and exports)">
+                  Your corrections{partEdit.checked.length ? ` · ${partEdit.checked.length} bars checked` : ''}
+                </span>
+              )}
+              {onTabEdit && !editor.editing && (
+                <button type="button" onClick={editor.start} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[#0B0D10] border border-white/[0.1] text-slate-200 hover:text-white cursor-pointer">
+                  <Pencil className="w-3 h-3" aria-hidden="true" />
+                  {partEdit ? 'Edit tab' : 'Correct this tab'}
+                </button>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-slate-400">
               <label className="flex items-center gap-1.5">
@@ -652,7 +688,36 @@ export function NotationView({
             </div>
           </div>
 
-          {tabNotes.length === 0 ? (
+          {editor.editing && (
+            <div className="px-4 py-2 border-b border-white/[0.06] bg-amber-500/[0.06] flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-300">
+              <span className="font-semibold text-amber-300">Editing</span>
+              <button type="button" onClick={editor.undo} disabled={!editor.canUndo} aria-label="Undo" className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[#0B0D10] border border-white/[0.1] disabled:opacity-40 cursor-pointer">
+                <Undo2 className="w-3 h-3" aria-hidden="true" /> Undo
+              </button>
+              <button type="button" onClick={editor.redo} disabled={!editor.canRedo} aria-label="Redo" className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[#0B0D10] border border-white/[0.1] disabled:opacity-40 cursor-pointer">
+                <Redo2 className="w-3 h-3" aria-hidden="true" /> Redo
+              </button>
+              <span className="text-slate-400">
+                Click a fret to select · click an empty spot on a string to add · type a fret number · ↑↓ other string · Shift+↑↓ pitch · Del delete · click a bar number to mark it checked
+              </span>
+              <span className="ml-auto flex items-center gap-2">
+                <button type="button" onClick={editor.discard} className="px-2 py-1 rounded text-rose-300 hover:bg-rose-500/10 cursor-pointer">
+                  Discard corrections
+                </button>
+                <button type="button" onClick={editor.stop} className="px-2.5 py-1 rounded bg-amber-500 text-[#0B0D10] font-semibold cursor-pointer">
+                  Done
+                </button>
+              </span>
+            </div>
+          )}
+          {partEdit && editor.score && (
+            <div className="px-4 py-1.5 border-b border-white/[0.06] text-[11px] text-slate-400 font-mono" title="How the automatic transcription compares with your corrections in the bars you checked: a note counts when you kept the same pitch starting within 50 ms">
+              Automatic transcription vs your corrections in {editor.score.bars} checked bar{editor.score.bars === 1 ? '' : 's'}: {Math.round(editor.score.f * 100)}% match
+              {' '}(right notes {editor.score.matched}/{editor.score.reference}, extra notes {editor.score.detected - editor.score.matched})
+            </div>
+          )}
+
+          {tabNotes.length === 0 && !editor.editing ? (
             <div className="p-10 text-center text-sm text-slate-400">
               No pitched notes detected on the {partName.toLowerCase()} stem for this audio file.
             </div>
@@ -667,9 +732,16 @@ export function NotationView({
                 follow={prefs.follow}
                 onNoteClick={handleTabNoteClick}
                 onSeekBeat={handleSeekBeat}
+                editing={editor.editing}
+                selectedId={editor.selectedId}
+                checkedBars={editor.checkedBars}
+                onCellClick={editor.addAt}
+                onBarClick={editor.toggleBar}
               />
               <p className="mt-2 text-[11px] text-slate-500">
-                Click a fret number to hear it and jump there · click anywhere in a bar to seek · notes snap to the {prefs.detail} grid
+                {editor.editing
+                  ? 'Your corrections are saved with the song and used for the sheet music, MIDI and exports. Bars you check are the answer key the automatic transcription is scored against.'
+                  : `Click a fret number to hear it and jump there · click anywhere in a bar to seek · notes snap to the ${prefs.detail} grid`}
               </p>
             </div>
           )}

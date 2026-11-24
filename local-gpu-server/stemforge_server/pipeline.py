@@ -39,6 +39,8 @@ class ProcessOptions:
     keyboards_mode: str = "merged"  # merged (piano + other) | piano
     split_guitars: bool = False  # lead (center) vs rhythm (sides)
     split_rhythm_guitars: bool = True  # the left and right rhythm guitar as two tracks (stemforge_server.sides)
+    separator: str = "auto"  # see SEPARATORS
+    chord_transcriber: str = "basic-pitch"  # full chords on the guitar: basic-pitch | yourmt3
     separate: bool = True  # False = keep existing stems, only re-transcribe
     transcribe: Dict[str, bool] = field(
         default_factory=lambda: {"guitar": True, "lead": True, "bass": True, "keyboards": True, "vocals": True, "drums": True}
@@ -64,6 +66,10 @@ class ProcessOptions:
             o.keyboards_mode = d["keyboardsMode"]
         o.split_guitars = bool(d.get("splitGuitars", o.split_guitars))
         o.split_rhythm_guitars = bool(d.get("splitRhythmGuitars", o.split_rhythm_guitars))
+        if d.get("separator") in SEPARATORS:
+            o.separator = d["separator"]
+        if d.get("chordTranscriber") in CHORD_TRANSCRIBERS:
+            o.chord_transcriber = d["chordTranscriber"]
         o.separate = bool(d.get("separate", True))
         o.free_vram_after = bool(d.get("freeVramAfter", False))
         if isinstance(d.get("transcribe"), dict):
@@ -96,6 +102,8 @@ class ProcessOptions:
             "keyboardsMode": self.keyboards_mode,
             "splitGuitars": self.split_guitars,
             "splitRhythmGuitars": self.split_rhythm_guitars,
+            "separator": self.separator,
+            "chordTranscriber": self.chord_transcriber,
             "transcribe": dict(self.transcribe),
             "sensitivity": dict(self.sensitivity),
             "minNoteMs": self.min_note_ms,
@@ -181,19 +189,22 @@ def loaded_models() -> List[str]:
     names = sorted(_models.keys())
     if _roformer is not None:
         names.append("bs_roformer_sw")
+    if _guitar_model is not None:
+        names.append("mel_roformer_guitar_becruily")
     if beats.loaded():
         names.append("beat_this")
     return names
 
 
 def unload_models() -> bool:
-    global _adtof_model, _roformer
+    global _adtof_model, _roformer, _guitar_model
     from . import beats
 
     with _models_lock:
-        had = bool(_models) or _roformer is not None
+        had = bool(_models) or _roformer is not None or _guitar_model is not None
         _models.clear()
         _roformer = None
+        _guitar_model = None
     had = beats.unload() or had
     _adtof_model = None
     if torch.cuda.is_available():
@@ -327,6 +338,124 @@ def run_demucs(name: str, wav: torch.Tensor, shifts: int, progress: Progress, lo
 ROFORMER_SLUG = "roformer-model-bs-roformer-sw-by-jarredou"
 _roformer: Optional[Tuple[Any, Any]] = None
 
+# Separation models the user can pick per song (Settings -> This Song -> Separation model).
+SEPARATORS: Dict[str, str] = {
+    "auto": "Automatic (BS-RoFormer SW when installed, Demucs in Fast mode)",
+    "roformer": "BS-RoFormer SW (6 stems)",
+    "roformer_guitar": "BS-RoFormer SW + becruily guitar model",
+    "roformer_guitar_avg": "BS-RoFormer SW + becruily guitar, averaged",
+    "demucs": "Demucs htdemucs (6 stems)",
+}
+GUITAR_MODEL_SLUG = "mel-band-roformer-guitar-becruily"
+_guitar_model: Optional[Tuple[Any, Any]] = None
+
+
+def guitar_model_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / "models" / "roformer" / GUITAR_MODEL_SLUG
+
+
+def guitar_model_available() -> bool:
+    d = guitar_model_dir()
+    return roformer_available() and (d / "becruily_guitar.ckpt").is_file() and (d / "config_guitar_becruily.yaml").is_file()
+
+
+def guitar_model():
+    """becruily's Mel-Band RoFormer guitar model (guitar vs. everything else). Weights load tensors-only."""
+    global _guitar_model
+    with _models_lock:
+        if _guitar_model is not None:
+            return _guitar_model
+        import yaml
+        from bs_roformer.inference import SafeLoaderWithTuple
+        from ml_collections import ConfigDict
+
+        from .mel_band_roformer import MelBandRoformer
+
+        d = guitar_model_dir()
+        with open(d / "config_guitar_becruily.yaml", encoding="utf-8") as fh:
+            config = ConfigDict(yaml.load(fh, Loader=SafeLoaderWithTuple))
+        model = MelBandRoformer(**dict(config.model))
+        state = torch.load(d / "becruily_guitar.ckpt", map_location="cpu", weights_only=True)
+        model.load_state_dict(state)
+        model.to(get_device()).eval()
+        _guitar_model = (model, config)
+        return _guitar_model
+
+
+CHORD_TRANSCRIBERS: Dict[str, str] = {
+    "basic-pitch": "Basic Pitch (fast)",
+    "yourmt3": "YourMT3+ (slower; multi-instrument transformer)",
+}
+
+
+def chord_transcribers_status() -> List[Dict[str, Any]]:
+    from . import ymt3_runner
+
+    available = {"basic-pitch": basic_pitch_model() is not None, "yourmt3": ymt3_runner.available()}
+    return [{"id": k, "label": v, "available": available[k]} for k, v in CHORD_TRANSCRIBERS.items()]
+
+
+GUITAR_PROGRAMS = range(24, 32)  # General MIDI guitars (YourMT3's guitar channel)
+
+
+def yourmt3_guitar_notes(jobs: List[Tuple[np.ndarray, int]], progress: Optional[Progress] = None) -> Optional[List[List[List[float]]]]:
+    """
+    YourMT3+ on each given (audio [channels, n], sample rate): the guitar notes it hears
+    ([[start, end, midi, velocity]], General MIDI guitar programs, no drums), in order. Runs the
+    model in its own process (stemforge_server.ymt3_runner); None if it is not installed or fails.
+    """
+    import json
+    import sys
+    import tempfile
+
+    from . import ymt3_runner
+
+    if not ymt3_runner.available() or not jobs:
+        return None
+    with tempfile.TemporaryDirectory(prefix="stemforge-ymt3-") as tmp:
+        args: List[str] = []
+        for k, (audio, sr) in enumerate(jobs):
+            wav = Path(tmp) / f"in{k}.wav"
+            sf.write(str(wav), np.ascontiguousarray(audio.T), sr, subtype="FLOAT")
+            args += [str(wav), str(Path(tmp) / f"out{k}.json")]
+        cmd = [sys.executable, "-m", "stemforge_server.ymt3_runner", *args]
+        log_path = Path(tmp) / "ymt3.log"
+        # the model prints a lot: write it to a file (a pipe nobody reads while it runs would fill up and hang it)
+        with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
+            proc = subprocess.Popen(cmd, cwd=str(Path(__file__).resolve().parent.parent), stdout=log_file, stderr=subprocess.STDOUT)
+            try:
+                while proc.poll() is None:
+                    if progress is not None:
+                        progress.check()
+                    time.sleep(0.25)
+            except JobCancelled:
+                proc.kill()
+                proc.wait()
+                raise
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        if proc.returncode != 0:
+            log.warning("YourMT3+ failed (exit %s): %s", proc.returncode, log_text[-800:])
+            return None
+        out: List[List[List[float]]] = []
+        for k in range(len(jobs)):
+            rows = json.loads((Path(tmp) / f"out{k}.json").read_text(encoding="utf-8"))
+            notes = [[r[0], r[1], r[2], max(1, min(127, int(r[3]) or 90))] for r in rows if not r[5] and int(r[4]) in GUITAR_PROGRAMS and r[1] > r[0]]
+            notes.sort(key=lambda n: (n[0], n[2]))
+            out.append(notes)
+        return out
+
+
+def separators_status() -> List[Dict[str, Any]]:
+    """The separation models and whether their weights are installed (for the per-song dropdown)."""
+    available = {
+        "auto": True,
+        "roformer": roformer_available(),
+        "roformer_guitar": guitar_model_available(),
+        "roformer_guitar_avg": guitar_model_available(),
+        "demucs": True,
+    }
+    return [{"id": k, "label": v, "available": available[k]} for k, v in SEPARATORS.items()]
+
 
 def roformer_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "models" / "roformer" / ROFORMER_SLUG
@@ -363,12 +492,13 @@ def roformer_model():
         return _roformer
 
 
-def run_roformer(mix: np.ndarray, progress: Progress, lo: float, hi: float, overlap: int = 0) -> Dict[str, np.ndarray]:
+def run_roformer(mix: np.ndarray, progress: Progress, lo: float, hi: float, overlap: int = 0, model_config: Optional[Tuple[Any, Any]] = None) -> Dict[str, np.ndarray]:
     """Chunked overlap-add inference (same scheme as bs_roformer.utils.demix_track) with progress + cancel.
-    The output is accumulated in system RAM so long songs don't need extra VRAM."""
-    model, config = roformer_model()
+    The output is accumulated in system RAM so long songs don't need extra VRAM. model_config defaults
+    to BS-RoFormer SW; a single-stem model (e.g. the guitar model) returns its target instrument."""
+    model, config = model_config if model_config is not None else roformer_model()
     dev = get_device()
-    C = int(config.inference.chunk_size)
+    C = int(config.inference.get("chunk_size", None) or config.audio.chunk_size)
     step = C // max(1, int(overlap or config.inference.num_overlap))
     fade = C // 10
     border = C - step
@@ -380,6 +510,8 @@ def run_roformer(mix: np.ndarray, progress: Progress, lo: float, hi: float, over
     window[:fade] = torch.linspace(0, 1, fade)
     window[-fade:] = torch.linspace(1, 0, fade)
     names = list(config.training.instruments)
+    if int(config.model.get("num_stems", len(names))) == 1 and config.training.get("target_instrument"):
+        names = [config.training.target_instrument]
     total = x.shape[1]
     result = torch.zeros((len(names), 2, total), dtype=torch.float32)
     counter = torch.zeros(total, dtype=torch.float32)
@@ -393,6 +525,8 @@ def run_roformer(mix: np.ndarray, progress: Progress, lo: float, hi: float, over
                 mode_pad = "reflect" if length > C // 2 + 1 else "constant"
                 part = torch.nn.functional.pad(part, (0, C - length), mode=mode_pad)
             out = model(part.unsqueeze(0).to(dev))[0].float().cpu()
+            if out.ndim == 2:  # single-stem model: [channels, time]
+                out = out.unsqueeze(0)
             w = window.clone()
             if i == 0:
                 w[:fade] = 1
@@ -434,11 +568,19 @@ def split_center_sides(stereo: np.ndarray) -> Tuple[np.ndarray, np.ndarray, floa
 
 
 def separate(mix: np.ndarray, opts: ProcessOptions, progress: Progress) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
-    """balanced / high: BS-RoFormer-SW when installed (much cleaner guitar and bass stems, which the
-    tab transcriber depends on); otherwise, and in fast mode, Demucs."""
-    if opts.quality in ("balanced", "high") and roformer_available():
+    """The separation model chosen for the song (opts.separator). "auto": BS-RoFormer-SW in balanced /
+    high quality when installed (much cleaner guitar and bass stems, which the tab transcriber depends
+    on), otherwise and in fast mode Demucs. A RoFormer choice whose weights are missing, or that fails,
+    falls back to Demucs."""
+    choice = opts.separator
+    if choice == "auto":
+        choice = "roformer" if opts.quality in ("balanced", "high") else "demucs"
+    if choice in ("roformer_guitar", "roformer_guitar_avg") and not guitar_model_available():
+        log.warning("The becruily guitar model is not installed; using BS-RoFormer SW alone.")
+        choice = "roformer"
+    if choice != "demucs" and roformer_available():
         try:
-            return separate_roformer(mix, opts, progress)
+            return separate_roformer(mix, opts, progress, guitar=choice)
         except torch.cuda.OutOfMemoryError:
             raise
         except JobCancelled:
@@ -487,15 +629,19 @@ def separate_demucs(mix: np.ndarray, opts: ProcessOptions, progress: Progress) -
         else:
             info["guitarSplit"] = False
             info["guitarSplitNote"] = "Guitars are not panned wide enough to split lead from rhythm."
+    info["separator"] = "demucs"
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     return {k: v.astype(np.float32) for k, v in stems.items()}, info
 
 
-def separate_roformer(mix: np.ndarray, opts: ProcessOptions, progress: Progress) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
-    """BS-RoFormer-SW separation (much cleaner guitar stem than htdemucs_6s)."""
+def separate_roformer(mix: np.ndarray, opts: ProcessOptions, progress: Progress, guitar: str = "roformer") -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    """BS-RoFormer-SW separation (much cleaner guitar stem than htdemucs_6s). guitar: "roformer" keeps
+    SW's guitar stem, "roformer_guitar" takes the guitar from becruily's dedicated guitar model and
+    "roformer_guitar_avg" averages the two (an ensemble)."""
     overlap = 4 if opts.quality == "high" else 2
-    r = run_roformer(mix, progress, 8, 62, overlap)
+    two = guitar in ("roformer_guitar", "roformer_guitar_avg")
+    r = run_roformer(mix, progress, 8, 45 if two else 62, overlap)
     stems: Dict[str, np.ndarray] = {
         "vocals": r["vocals"],
         "bass": r["bass"],
@@ -503,7 +649,15 @@ def separate_roformer(mix: np.ndarray, opts: ProcessOptions, progress: Progress)
         "guitar": r["guitar"],
         "keyboards": r["piano"] if opts.keyboards_mode == "piano" else r["piano"] + r["other"],
     }
-    info: Dict[str, Any] = {"quality": opts.quality, "models": ["bs_roformer_sw"], "overlap": overlap}
+    models = ["bs_roformer_sw"]
+    if two:
+        progress.set("Separating the guitar with the guitar model", 45)
+        g = run_roformer(mix, progress, 45, 62, overlap, model_config=guitar_model())
+        gm = next(iter(g.values()))
+        n = min(gm.shape[-1], stems["guitar"].shape[-1])
+        stems["guitar"] = gm[:, :n] if guitar == "roformer_guitar" else 0.5 * (gm[:, :n] + stems["guitar"][:, :n])
+        models.append("mel_roformer_guitar_becruily")
+    info: Dict[str, Any] = {"quality": opts.quality, "models": models, "overlap": overlap, "separator": guitar}
     if opts.split_guitars:
         progress.set("Splitting lead and rhythm guitars", 65)
         center, sides, ratio = split_center_sides(stems["guitar"])
@@ -658,6 +812,7 @@ def transcribe_strings(
     lo: float = 0,
     hi: float = 0,
     always_parts: Tuple[str, ...] = (),
+    side_fallbacks: Optional[Dict[str, List[List[List[float]]]]] = None,
 ) -> Tuple[Dict[str, List[List[float]]], Dict[str, Dict[str, float]], Dict[str, Dict[str, List[List[float]]]]]:
     """
     Periodicity-based riff transcription (stemforge_server.riff) for the guitar, lead and bass stems:
@@ -693,7 +848,7 @@ def transcribe_strings(
             sensitivity=sens,
             fallback_notes=fallback.get(s),
             bleed_refs=refs,
-            side_fallback=lambda s=s: side_basic_pitch(stems_dir / f"{s}.flac", s, opts),
+            side_fallback=(lambda s=s: side_fallbacks[s]) if side_fallbacks and s in side_fallbacks else (lambda s=s: side_basic_pitch(stems_dir / f"{s}.flac", s, opts)),
             always_parts=s in always_parts,
         )
         out[s] = notes
@@ -969,11 +1124,26 @@ def run_job(
         string_stats: Dict[str, Dict[str, float]] = {}
         guitar_parts: Optional[Dict[str, List[List[float]]]] = None
         strings = [s for s in to_run if s in STRING_STEMS]
+        chord_engine = "basic-pitch" if basic_pitch_model() is not None else None
+        fallback = dict(notes)
+        side_fallbacks: Dict[str, List[List[List[float]]]] = {}
+        if strings and "guitar" in strings and opts.chord_transcriber == "yourmt3":
+            progress.set("Transcribing full chords (YourMT3+)", 80)
+            g_audio, g_sr = read_stem(stems_dir / "guitar.flac")
+            jobs = [(g_audio, g_sr)] + ([(g_audio[ch : ch + 1], g_sr) for ch in range(2)] if g_audio.shape[0] >= 2 else [])
+            ym = yourmt3_guitar_notes(jobs, progress)
+            if ym is not None:
+                fallback["guitar"] = gate_notes(ym[0], envs["guitar"], 0.05, opts.silence_gate_db)
+                if len(ym) == 3:
+                    side_fallbacks["guitar"] = [gate_notes(ym[1 + ch], envelope_db(g_audio[ch], g_sr), 0.05, opts.silence_gate_db) for ch in range(2)]
+                chord_engine = "yourmt3"
+            del g_audio
         if strings:
             progress.set("Transcribing guitar and bass riffs", 82)
             try:
                 riffs, string_stats, string_parts = transcribe_strings(
-                    stems_dir, strings, opts, notes, progress, 82, 88, always_parts=("guitar",) if result["guitarSides"] else ()
+                    stems_dir, strings, opts, fallback, progress, 82, 88,
+                    always_parts=("guitar",) if result["guitarSides"] else (), side_fallbacks=side_fallbacks or None,
                 )
                 for s, ns in riffs.items():
                     notes[s] = gate_notes(ns, envs[s], 0.05, opts.silence_gate_db)
@@ -1036,6 +1206,7 @@ def run_job(
         "engine": "basic-pitch" if basic_pitch_model() is not None else None,
         "stringEngine": "riff" if string_stats else ("basic-pitch" if basic_pitch_model() is not None else None),
         "stringStats": string_stats,
+        "chordEngine": chord_engine,
         "drumEngine": drum_engine,
         "notes": notes,
         **({"guitarParts": guitar_parts} if guitar_parts else {}),

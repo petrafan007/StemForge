@@ -7,10 +7,15 @@ import type { ResolvedTunings } from '../audio/scoreExport';
 import { TIME_SIGNATURES } from '../audio/timeline';
 import {
   GENRE_PRESETS,
+  CHORD_TRANSCRIBER_OPTIONS,
+  MODEL_NAMES,
+  SEPARATOR_OPTIONS,
   applyGenrePreset,
   presetById,
   type AppSettings,
+  type ChordTranscriberId,
   type GenrePresetId,
+  type SeparatorId,
   type SensitivityTarget,
   type TranscribeTarget,
 } from '../settings/appSettings';
@@ -30,8 +35,13 @@ interface SongEditing {
   onChangeGuitarTuning: (t: GuitarTuningId | 'auto') => void;
   onChangeBassTuning: (t: BassTuningId | 'auto') => void;
   onRename: (meta: { title?: string; artist?: string; album?: string }) => void;
-  onReanalyze?: (mode: 'transcribe' | 'full') => void;
+  onReanalyze?: (mode: 'transcribe' | 'full', choice?: { separator?: SeparatorId; chordTranscriber?: ChordTranscriberId }) => void;
   reanalyzing?: { stage: string; percent: number } | null;
+  /** Installed separation models (from the engine). */
+  separatorChoices?: Array<{ id: string; label: string; available: boolean }>;
+  defaultSeparator: SeparatorId;
+  chordTranscriberChoices?: Array<{ id: string; label: string; available: boolean }>;
+  defaultChordTranscriber: ChordTranscriberId;
 }
 
 interface SettingsViewProps {
@@ -146,6 +156,26 @@ export function SettingsView({
               value={settings.engine.serverUrl}
               aria-label="GPU engine address"
               onChange={(e) => set((s) => ({ ...s, engine: { ...s.engine, serverUrl: e.target.value } }))}
+            />
+          </Field>
+          <Field label="Separation model" hint={`${SEPARATOR_OPTIONS.find((o) => o.id === settings.processing.separator)?.hint ?? ''} Each song can be re-separated with another model under This Song.`}>
+            <Select
+              ariaLabel="Separation model"
+              value={settings.processing.separator}
+              onChange={(v) => set((s) => ({ ...s, processing: { ...s.processing, separator: v } }))}
+              options={separatorSelectOptions(health?.separatorChoices)}
+            />
+          </Field>
+          <Field label="Full-chord transcriber" hint={`${CHORD_TRANSCRIBER_OPTIONS.find((o) => o.id === settings.processing.chordTranscriber)?.hint ?? ''} Used where the guitar plays full chords the riff transcriber can't read.`}>
+            <Select
+              ariaLabel="Full-chord transcriber"
+              value={settings.processing.chordTranscriber}
+              onChange={(v) => set((s) => ({ ...s, processing: { ...s.processing, chordTranscriber: v } }))}
+              options={CHORD_TRANSCRIBER_OPTIONS.map((o) => {
+                const c = health?.chordTranscriberChoices?.find((x) => x.id === o.id);
+                const missing = c ? !c.available : false;
+                return { value: o.id, label: missing ? `${o.label} (not installed)` : o.label, disabled: missing };
+              })}
             />
           </Field>
           <Field
@@ -445,6 +475,15 @@ export function SettingsView({
   );
 }
 
+/** Dropdown options for the separation models; ones the engine reports as missing are marked. */
+function separatorSelectOptions(choices?: Array<{ id: string; available: boolean }>): Array<{ value: SeparatorId; label: string; disabled?: boolean }> {
+  return SEPARATOR_OPTIONS.map((o) => {
+    const c = choices?.find((x) => x.id === o.id);
+    const missing = c ? !c.available : false;
+    return { value: o.id, label: missing ? `${o.label} (not installed)` : o.label, disabled: missing };
+  });
+}
+
 function SongSection({
   song,
   titleDraft,
@@ -460,6 +499,10 @@ function SongSection({
   const keyValue = overrides.key ? `${overrides.key.rootPc}:${overrides.key.mode}` : 'auto';
   const sep = doc?.processing?.separation;
   const tr = doc?.transcription;
+  const usedSeparator = (sep?.separator ?? (doc?.processing?.options as { separator?: string } | undefined)?.separator) as SeparatorId | undefined;
+  const [sepChoice, setSepChoice] = useState<SeparatorId>(usedSeparator && usedSeparator !== 'auto' ? usedSeparator : song.defaultSeparator);
+  const usedChord = (tr?.chordEngine ?? undefined) as ChordTranscriberId | undefined;
+  const [chordChoice, setChordChoice] = useState<ChordTranscriberId>(usedChord ?? song.defaultChordTranscriber);
 
   return (
     <Section
@@ -607,13 +650,15 @@ function SongSection({
       {doc && (
         <div className="text-xs text-slate-400 leading-relaxed border-t border-white/[0.06] pt-3 flex flex-col gap-1">
           <span>
-            Separated with {(sep?.models ?? ['htdemucs_6s']).join(' + ')} ({doc.processing?.quality ?? 'balanced'}
+            Separated with {(sep?.models ?? ['htdemucs_6s']).map((m) => MODEL_NAMES[m] ?? m).join(' + ')}
+            {usedSeparator === 'roformer_guitar_avg' ? ' (guitar averaged)' : ''} ({doc.processing?.quality ?? 'balanced'}
             {sep?.shifts ? `, ${sep.shifts} passes` : ''}) on {doc.processing?.gpu ?? 'GPU'}
             {sep?.seconds ? ` in ${sep.seconds}s` : ''}.
             {sep?.guitarSplit ? ' Lead and rhythm guitars split.' : sep?.guitarSplitNote ? ` ${sep.guitarSplitNote}` : ''}
           </span>
           <span>
-            Notes: {tr?.engine === 'basic-pitch' ? 'Basic Pitch (polyphonic)' : 'browser'} · Drums:{' '}
+            Notes: {tr?.engine === 'basic-pitch' ? 'Basic Pitch (polyphonic)' : 'browser'}
+            {tr?.stringEngine === 'riff' ? ` · Guitar & bass: riff transcriber, full chords by ${tr?.chordEngine === 'yourmt3' ? 'YourMT3+' : 'Basic Pitch'}` : ''} · Drums:{' '}
             {tr?.drumEngine === 'adtof' ? 'ADTOF neural model' : 'onset detector'}
             {tr?.silentStems?.length ? ` · Treated as silent: ${tr.silentStems.join(', ')}` : ''}
           </span>
@@ -622,13 +667,31 @@ function SongSection({
 
       {song.onReanalyze && (
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" className={secondaryButtonClass} disabled={Boolean(song.reanalyzing)} onClick={() => song.onReanalyze?.('transcribe')}>
+          <Select
+            ariaLabel="Full-chord transcriber for this song"
+            value={chordChoice}
+            onChange={setChordChoice}
+            options={CHORD_TRANSCRIBER_OPTIONS.map((o) => {
+              const c = song.chordTranscriberChoices?.find((x) => x.id === o.id);
+              const missing = c ? !c.available : false;
+              return { value: o.id, label: `Full chords: ${o.label}${missing ? ' (not installed)' : ''}`, disabled: missing };
+            })}
+            className="w-56"
+          />
+          <button type="button" className={secondaryButtonClass} disabled={Boolean(song.reanalyzing)} onClick={() => song.onReanalyze?.('transcribe', { chordTranscriber: chordChoice })}>
             <Wand2 className="w-3.5 h-3.5" aria-hidden="true" />
-            Re-transcribe with current settings
+            Re-transcribe
           </button>
-          <button type="button" className={secondaryButtonClass} disabled={Boolean(song.reanalyzing)} onClick={() => song.onReanalyze?.('full')}>
+          <Select
+            ariaLabel="Separation model for this song"
+            value={sepChoice}
+            onChange={setSepChoice}
+            options={separatorSelectOptions(song.separatorChoices)}
+            className="w-72"
+          />
+          <button type="button" className={secondaryButtonClass} disabled={Boolean(song.reanalyzing)} onClick={() => song.onReanalyze?.('full', { separator: sepChoice, chordTranscriber: chordChoice })}>
             <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-            Re-separate &amp; re-transcribe
+            Re-separate with this model
           </button>
           {song.reanalyzing && (
             <span className="inline-flex items-center gap-2 text-xs text-slate-300">

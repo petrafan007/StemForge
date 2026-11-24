@@ -31,6 +31,12 @@ interface TabStaffProps {
   follow: boolean;
   onNoteClick: (note: TabLayoutNote) => void;
   onSeekBeat: (beat: number) => void;
+  /** Tab correction mode: clicks on empty spots add notes (onCellClick), bar numbers toggle "checked". */
+  editing?: boolean;
+  selectedId?: string | null;
+  checkedBars?: Set<number>;
+  onCellClick?: (col: number, stringIndex: number) => void;
+  onBarClick?: (bar: number) => void;
 }
 
 const TabRow = memo(function TabRow({
@@ -41,6 +47,11 @@ const TabRow = memo(function TabRow({
   showSustain,
   onNoteClick,
   onSeekBeat,
+  editing,
+  selectedId,
+  checkedBars,
+  onCellClick,
+  onBarClick,
 }: {
   row: TabLayoutRow;
   layout: TabLayout;
@@ -49,6 +60,11 @@ const TabRow = memo(function TabRow({
   showSustain: boolean;
   onNoteClick: (note: TabLayoutNote) => void;
   onSeekBeat: (beat: number) => void;
+  editing?: boolean;
+  selectedId?: string | null;
+  checkedBars?: Set<number>;
+  onCellClick?: (col: number, stringIndex: number) => void;
+  onBarClick?: (bar: number) => void;
 }) {
   const { labelWidth, staffTop, stringGap, strings, rowHeight } = layout;
   const width = labelWidth + row.width + 2;
@@ -83,16 +99,32 @@ const TabRow = memo(function TabRow({
                 width={m.width}
                 height={staffBottom - staffTop + 20}
                 fill="transparent"
-                className="cursor-pointer hover:fill-white/[0.02]"
+                className={editing ? 'cursor-crosshair hover:fill-white/[0.03]' : 'cursor-pointer hover:fill-white/[0.02]'}
                 onClick={(e) => {
                   const box = (e.currentTarget as SVGRectElement).getBoundingClientRect();
+                  if (editing && onCellClick) {
+                    const cell = (inner / layout.stepsPerMeasure) || layout.colWidth;
+                    const c = Math.max(0, Math.min(layout.stepsPerMeasure - 1, Math.floor((e.clientX - box.left - layout.padLeft) / cell)));
+                    const s = Math.round((e.clientY - box.top + (staffTop - 10) - staffTop) / stringGap);
+                    onCellClick(m.startCol + c, Math.max(0, Math.min(strings - 1, s)));
+                    return;
+                  }
                   const frac = Math.max(0, Math.min(1, (e.clientX - box.left - layout.padLeft) / Math.max(1, inner)));
                   onSeekBeat(m.startBeat + frac * layout.beatsPerMeasure);
                 }}
               />
-              {/* bar number + chord changes */}
-              <text x={4} y={12} fontSize={10} fontFamily="JetBrains Mono, monospace" fill="#64748B">
+              {/* bar number (in edit mode: click to mark the bar as checked) + chord changes */}
+              <text
+                x={4}
+                y={12}
+                fontSize={10}
+                fontFamily="JetBrains Mono, monospace"
+                fill={checkedBars?.has(m.index) ? '#34D399' : '#64748B'}
+                className={editing ? 'cursor-pointer' : undefined}
+                onClick={editing && onBarClick ? () => onBarClick(m.index) : undefined}
+              >
                 {m.index + 1}
+                {checkedBars?.has(m.index) ? ' ✓' : ''}
               </text>
               {m.chords.map((c, i) => (
                 <text key={i} x={Math.max(22, c.x)} y={13} fontSize={11} fontWeight={700} fontFamily="JetBrains Mono, monospace" fill="#F59E0B">
@@ -130,7 +162,7 @@ const TabRow = memo(function TabRow({
                     }}
                   >
                     <title>{`${midiToNoteName(n.midi)} · string ${tuning.stringNames[n.stringIndex]} · fret ${n.fret} · velocity ${n.velocity}`}</title>
-                    <rect x={n.x - w / 2} y={y - 7} width={w} height={14} rx={2} fill={ROW_BG} />
+                    <rect x={n.x - w / 2} y={y - 7} width={w} height={14} rx={2} fill={ROW_BG} stroke={n.id === selectedId ? '#F8FAFC' : 'none'} strokeWidth={1.5} />
                     <text x={n.x} y={y + 4} textAnchor="middle" fontSize={12} fontWeight={700} fontFamily="JetBrains Mono, monospace" fill={palette.text}>
                       {n.fret}
                     </text>
@@ -199,17 +231,30 @@ function Playhead({ layout, currentBeat, palette, follow, containerRef }: { layo
   );
 }
 
-export function TabStaff({ layout, tuning, instrument, showSustain, currentBeat, follow, onNoteClick, onSeekBeat }: TabStaffProps) {
+export function TabStaff({ layout, tuning, instrument, showSustain, currentBeat, follow, onNoteClick, onSeekBeat, editing, selectedId, checkedBars, onCellClick, onBarClick }: TabStaffProps) {
   const palette = PALETTES[instrument];
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rows = useMemo(
     () =>
       layout.rows.map((row) => (
         <div key={row.index} className="absolute left-0" style={{ top: row.top }}>
-          <TabRow row={row} layout={layout} tuning={tuning} palette={palette} showSustain={showSustain} onNoteClick={onNoteClick} onSeekBeat={onSeekBeat} />
+          <TabRow
+            row={row}
+            layout={layout}
+            tuning={tuning}
+            palette={palette}
+            showSustain={showSustain}
+            onNoteClick={onNoteClick}
+            onSeekBeat={onSeekBeat}
+            editing={editing}
+            selectedId={selectedId}
+            checkedBars={checkedBars}
+            onCellClick={onCellClick}
+            onBarClick={onBarClick}
+          />
         </div>
       )),
-    [layout, tuning, palette, showSustain, onNoteClick, onSeekBeat]
+    [layout, tuning, palette, showSustain, onNoteClick, onSeekBeat, editing, selectedId, checkedBars, onCellClick, onBarClick]
   );
   return (
     <div ref={containerRef} className="relative" style={{ height: layout.totalHeight, width: layout.labelWidth + layout.maxRowWidth + 4 }}>

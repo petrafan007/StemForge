@@ -150,6 +150,8 @@ export interface MidiNoteEvent {
   velocity: number; // 1-127
   channel: number; // 0 for keys, 9 for GM drums
   label?: string; // e.g. 'Kick', 'Snare', 'C4'
+  /** Tab string chosen by the user (0 = highest string); the fingering keeps it. */
+  stringIndex?: number;
 }
 
 export type DrumVoice = 'kick' | 'snare' | 'hihat' | 'openhat' | 'tom' | 'crash';

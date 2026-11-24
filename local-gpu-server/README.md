@@ -6,6 +6,13 @@ The Python backend for StemForge. It runs on http://127.0.0.1:8000 (this compute
    - **Fast:** Meta's Demucs `htdemucs_6s`, 1 pass.
    - **Balanced:** **BS-RoFormer-SW** (6 stems: vocals, guitar, bass, drums, piano, other), 2× overlap.
    - **High:** BS-RoFormer-SW with 4× overlap. Falls back to Demucs (`htdemucs_ft` + `htdemucs_6s`) if the RoFormer weights aren't installed.
+   - **Model choice per song** (`separator` option):
+     - `roformer`: BS-RoFormer SW alone;
+     - `roformer_guitar`: SW, with the guitar stem from [becruily's Mel-Band RoFormer guitar model](https://huggingface.co/becruily/mel-band-roformer-guitar) (45 MB, downloaded by setup with its SHA-256);
+     - `roformer_guitar_avg`: the two guitar estimates averaged;
+     - `demucs`;
+     - `auto`: the default, as above.
+     The Mel-Band RoFormer architecture is vendored inference-only from ZFTurbo's MIT-licensed Music-Source-Separation-Training (`stemforge_server/mel_band_roformer.py`). `/health` lists which choices are installed.
    - **Optional lead/rhythm guitar split:** separates the center-panned guitar from the side-panned guitars.
    - **Left / right rhythm guitar split** (`stemforge_server/sides.py`, on by default): double-tracked guitars on opposite sides become two tracks, `guitar1` (left) and `guitar2` (right). Each STFT bin is modelled as one guitar plus the other guitar's leakage into its side (estimated per third-octave band). Wiener masks then give each guitar its own part of its channel. The two tracks add up exactly to the guitar stem, which is kept for transcription. On the Extol test song the other guitar's notes drop from −15 dB to −23 / −33 dB below the guitar's own note.
 2. **Transcription:**
@@ -17,7 +24,11 @@ The Python backend for StemForge. It runs on http://127.0.0.1:8000 (this compute
      - each guitar is also kept as its own part (`transcription.guitarParts`: left / right) when the guitar stem is split into two tracks, or when the two guitars play different parts somewhere. Each part keeps its own notes, with Basic Pitch run on its own channel for full chords. In unison sections an attack only one side's detector caught is added to both parts. Notes whose sound the split gives to the other guitar (its leakage into this side) are dropped;
      - bleed from the bass, vocal and drum stems rejected;
      - the tuning's lowest string estimated in a first pass.
-     Basic Pitch is used only where the audio isn't periodic (full chords).
+     Where the audio isn't periodic (full chords) the notes come from Basic Pitch, or from **YourMT3+** with `chordTranscriber: "yourmt3"`.
+   - **YourMT3+** (optional, `setup_windows.ps1 -WithYourMT3`; Apache-2.0).
+     - It uses the official Space's model code at a pinned revision and the "YPTF.MoE+Multi (noPS)" checkpoint (560 MB, SHA-256 checked) in `models/yourmt3`.
+     - It runs in its own process (`stemforge_server/ymt3_runner.py`), loading the checkpoint tensors-only and allow-listing only YourMT3's own tokenizer classes.
+     - It transcribes the guitar stem and each side in one model load: about 7 s to load plus 18 s per 5-minute track on an RTX 4070.
    - **Keyboards and vocals:** Spotify **Basic Pitch** (ONNX, CPU) transcribes polyphonic notes.
    - **Silence gating:** keeps bleed from turning into phantom notes.
    - **Drums:** **ADTOF** if it's installed (`setup_windows.ps1 -WithAdtof`), otherwise a band-limited onset detector.

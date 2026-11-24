@@ -1,0 +1,7 @@
+# Optional: YourMT3+ (Chang et al., 2024; Apache-2.0) as the full-chord transcriber for guitar.
+# Installed by:  .\setup_windows.ps1 -WithYourMT3
+# The model code (official Hugging Face Space mimbres/YourMT3, pinned revision) and the
+# "YPTF.MoE+Multi (noPS)" checkpoint (~560 MB, SHA-256 checked) go to models\yourmt3.
+transformers==4.45.1
+lightning>=2.2.1,<2.7
+deprecated

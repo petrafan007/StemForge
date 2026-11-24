@@ -21,6 +21,32 @@ export interface TranscriptionSettings {
   simplifyPowerChords: boolean;
 }
 
+/** Separation models of the GPU engine (the engine reports which ones are installed). */
+export type SeparatorId = 'auto' | 'roformer' | 'roformer_guitar' | 'roformer_guitar_avg' | 'demucs';
+
+export const SEPARATOR_OPTIONS: Array<{ id: SeparatorId; label: string; hint: string }> = [
+  { id: 'auto', label: 'Automatic', hint: 'BS-RoFormer SW in Balanced / High quality, Demucs in Fast.' },
+  { id: 'roformer', label: 'BS-RoFormer SW (6 stems)', hint: 'One model for every stem. Clean guitar and bass.' },
+  { id: 'roformer_guitar', label: 'BS-RoFormer SW + guitar model', hint: "Guitar from becruily's dedicated guitar model, other stems from SW." },
+  { id: 'roformer_guitar_avg', label: 'BS-RoFormer SW + guitar model, averaged', hint: 'Guitar averaged from both models (an ensemble). Often the cleanest.' },
+  { id: 'demucs', label: 'Demucs (htdemucs)', hint: "Meta's older model. Fastest; more bleed." },
+];
+
+export type ChordTranscriberId = 'basic-pitch' | 'yourmt3';
+
+export const CHORD_TRANSCRIBER_OPTIONS: Array<{ id: ChordTranscriberId; label: string; hint: string }> = [
+  { id: 'basic-pitch', label: 'Basic Pitch', hint: 'Fast. Hears distortion overtones as extra notes more often.' },
+  { id: 'yourmt3', label: 'YourMT3+', hint: 'Multi-instrument transformer (2024). About a minute more per song. Try both and keep what sounds right.' },
+];
+
+/** Friendly names of the models the engine records per song. */
+export const MODEL_NAMES: Record<string, string> = {
+  bs_roformer_sw: 'BS-RoFormer SW',
+  mel_roformer_guitar_becruily: 'becruily guitar model',
+  htdemucs_6s: 'Demucs htdemucs_6s',
+  htdemucs_ft: 'Demucs htdemucs_ft',
+};
+
 export interface AppSettings {
   version: 1;
   engine: { mode: EngineMode; serverUrl: string };
@@ -30,6 +56,10 @@ export interface AppSettings {
     splitGuitars: boolean;
     /** The left and right rhythm guitars as two tracks (and two tabs). */
     splitRhythmGuitars: boolean;
+    /** Separation model for new songs (each song can be re-separated with another one). */
+    separator: SeparatorId;
+    /** What transcribes full chords on the guitar (where the riff transcriber can't read a pitch). */
+    chordTranscriber: ChordTranscriberId;
     freeVramAfter: boolean;
     transcribe: Record<TranscribeTarget, boolean>;
   };
@@ -149,6 +179,8 @@ export function defaultSettings(): AppSettings {
       keyboardsMode: 'merged',
       splitGuitars: false,
       splitRhythmGuitars: true,
+      separator: 'auto',
+      chordTranscriber: 'basic-pitch',
       freeVramAfter: false,
       transcribe: { guitar: true, lead: true, bass: true, keyboards: true, vocals: true, drums: true },
     },
@@ -238,6 +270,8 @@ export function processingPayload(settings: AppSettings, extra: Record<string, u
     keyboardsMode: settings.processing.keyboardsMode,
     splitGuitars: settings.processing.splitGuitars,
     splitRhythmGuitars: settings.processing.splitRhythmGuitars,
+    separator: settings.processing.separator,
+    chordTranscriber: settings.processing.chordTranscriber,
     freeVramAfter: settings.processing.freeVramAfter,
     transcribe: settings.processing.transcribe,
     sensitivity: t.sensitivity,

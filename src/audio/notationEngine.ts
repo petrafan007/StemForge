@@ -235,7 +235,15 @@ export function mapNotesToTab(
       cands = candidatesFor(group.map((g) => g.midi));
     }
     if (!cands.length) continue;
-    groups.push({ items: group, key: group.map((g) => g.midi).join(','), cands });
+    // notes the user put on a string (tab corrections) keep it
+    const pins = group.map((g) => {
+      const s = g.note.stringIndex;
+      if (s === undefined || s < 0 || s >= numStrings) return undefined;
+      const fret = g.midi - tuning.openMidi[s];
+      return fret >= 0 && fret <= Math.max(maxFret, 24) ? s : undefined;
+    });
+    if (pins.some((p) => p !== undefined)) cands = pinnedCandidates(cands, group.map((g) => g.midi), pins, tuning);
+    groups.push({ items: group, key: group.map((g) => g.midi).join(',') + (pins.some((p) => p !== undefined) ? `|${pins.join(',')}` : ''), cands });
   }
   if (!groups.length) return [];
 
@@ -318,6 +326,36 @@ export function mapNotesToTab(
     });
   });
   return result.sort((a, b) => a.startBeat - b.startBeat || a.stringIndex - b.stringIndex);
+}
+
+/**
+ * Candidates that keep every pinned note on its string. When none of the generated candidates does,
+ * the user's strings win: pinned notes on their strings, the others on the best free strings.
+ */
+function pinnedCandidates(cands: Fingering[], midis: number[], pins: Array<number | undefined>, tuning: TuningPreset): Fingering[] {
+  const ok = cands.filter((c) => pins.every((p, k) => p === undefined || c.strings[k] === p));
+  if (ok.length) return ok;
+  const strings: number[] = [];
+  const used = new Set<number>(pins.filter((p): p is number => p !== undefined));
+  midis.forEach((m, k) => {
+    const pin = pins[k];
+    if (pin !== undefined) {
+      strings.push(pin);
+      return;
+    }
+    let best = -1;
+    for (let s = 0; s < tuning.openMidi.length; s++) {
+      const f = m - tuning.openMidi[s];
+      if (used.has(s) || f < 0) continue;
+      if (best < 0 || f < m - tuning.openMidi[best]) best = s;
+    }
+    if (best < 0) best = cands[0]?.strings[k] ?? 0;
+    used.add(best);
+    strings.push(best);
+  });
+  const frets = strings.map((s, k) => midis[k] - tuning.openMidi[s]);
+  const fretted = frets.filter((f) => f > 0);
+  return [{ strings, frets, cost: 0, pos: fretted.length ? Math.min(...fretted) : null, sig: strings.map((s, k) => `${s}:${frets[k]}`).join('|') }];
 }
 
 interface Fingering {

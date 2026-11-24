@@ -26,6 +26,10 @@ export interface GpuHealthStatus {
   drumTranscriber?: string | null;
   projectsDir?: string;
   supportsProjects: boolean;
+  /** Separation models and whether their weights are installed. */
+  separatorChoices?: Array<{ id: string; label: string; available: boolean }>;
+  /** Full-chord transcribers and whether they are installed. */
+  chordTranscriberChoices?: Array<{ id: string; label: string; available: boolean }>;
 }
 
 export interface ProjectSummary {
@@ -70,6 +74,8 @@ export interface ProjectState {
   minVelocity?: number;
   simplifyPowerChords?: boolean;
   notationPart?: string;
+  /** Tab corrections per part (src/audio/tabEdits.ts). */
+  tabEdits?: unknown;
 }
 
 export interface ProjectDocument {
@@ -96,6 +102,8 @@ export interface ProjectDocument {
       gain?: number;
       guitarSplit?: boolean;
       guitarSplitNote?: string;
+      /** Separation model choice the stems were made with. */
+      separator?: string;
       guitarSideRatio?: number;
     } | null;
   };
@@ -113,6 +121,8 @@ export interface ProjectDocument {
     engine: 'basic-pitch' | null;
     stringEngine?: 'riff' | 'basic-pitch' | null;
     stringStats?: Record<string, Record<string, number>>;
+    /** What transcribed full guitar chords: 'basic-pitch' or 'yourmt3'. */
+    chordEngine?: string | null;
     drumEngine: 'adtof' | 'onsets' | null;
     notes: Partial<Record<MelodicStemId, NoteTuple[]>>;
     /** Left / right guitars of the guitar stem on their own, when they play different parts. */
@@ -189,6 +199,12 @@ export async function checkGpuServerHealth(serverUrl: string, fetchImpl: FetchFn
       drumTranscriber: (data.drum_transcriber as string | null) ?? null,
       projectsDir: typeof data.projects_dir === 'string' ? data.projects_dir : undefined,
       supportsProjects: Boolean(data.projects),
+      separatorChoices: Array.isArray(data.separator_choices)
+        ? (data.separator_choices as Array<{ id: string; label: string; available: boolean }>)
+        : undefined,
+      chordTranscriberChoices: Array.isArray(data.chord_transcriber_choices)
+        ? (data.chord_transcriber_choices as Array<{ id: string; label: string; available: boolean }>)
+        : undefined,
     };
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {

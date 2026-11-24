@@ -2,13 +2,15 @@
 # Usage:  .\setup_windows.ps1            (auto-picks Python 3.12 / 3.11 / 3.10)
 #         .\setup_windows.ps1 -Python "C:\Path\To\python.exe"
 #         .\setup_windows.ps1 -WithAdtof (also installs the ADTOF neural drum transcriber)
+#         .\setup_windows.ps1 -WithYourMT3 (also installs YourMT3+ as an optional full-chord transcriber)
 #
 # Everything is installed into local-gpu-server\.venv only. Nothing is installed globally,
 # and other Python setups on this PC (e.g. ComfyUI's embedded Python) are never touched.
 
 param(
     [string]$Python = "",
-    [switch]$WithAdtof
+    [switch]$WithAdtof,
+    [switch]$WithYourMT3
 )
 
 # ADTOF-pytorch (drum transcription trained on rock/metal rhythm-game charts). Pinned to the
@@ -101,12 +103,30 @@ function Get-Model([string]$Url, [string]$Dest, [string]$Sha256) {
     Move-Item -Force "$Dest.part" $Dest
 }
 
-Write-Host "Installing model weights (BS-RoFormer-SW ~700 MB, Beat This! ~80 MB) ..."
+Write-Host "Installing model weights (BS-RoFormer-SW ~700 MB, Beat This! ~80 MB, guitar model ~45 MB) ..."
 $models = Join-Path $PSScriptRoot "models"
 $rof = Join-Path $models "roformer\roformer-model-bs-roformer-sw-by-jarredou"
 Get-Model "https://huggingface.co/enerjazzer/BS-ROFO-SW-Fixed/resolve/main/BS-Rofo-SW-Fixed.yaml" (Join-Path $rof "BS-Rofo-SW-Fixed.yaml") "52df622c95ff3c1f4e1389f476ed737581a2c2dc12324d52c9763be9ccd2be2b"
 Get-Model "https://huggingface.co/enerjazzer/BS-ROFO-SW-Fixed/resolve/main/BS-Rofo-SW-Fixed.ckpt" (Join-Path $rof "BS-Rofo-SW-Fixed.ckpt") "24e7d35ee9c64415673d3fd33e06a67cac2c103c5df6267ba1576459c775916e"
 Get-Model "https://cloud.cp.jku.at/public.php/dav/files/7ik4RrBKTS273gp/final0.ckpt" (Join-Path $models "beat_this\final0.ckpt") "8c328b45f59d8dd3dff219253ff6a8d6482be57d0133a29140e2febbf8eb8331"
+# becruily's guitar separation model (Mel-Band RoFormer, ~45 MB): "SW + guitar model" separation choices
+$gtr = Join-Path $models "roformer\mel-band-roformer-guitar-becruily"
+Get-Model "https://huggingface.co/becruily/mel-band-roformer-guitar/resolve/main/becruily_guitar.ckpt" (Join-Path $gtr "becruily_guitar.ckpt") "83472bbf125774af5282d2e0b86df89eaf2dd45e8a4ec8d68e820ebf3e42a83c"
+Get-Model "https://huggingface.co/becruily/mel-band-roformer-guitar/resolve/main/config_guitar_becruily.yaml" (Join-Path $gtr "config_guitar_becruily.yaml") "b681c3f886251b04b666b3f06e87ce65d7ec610e40b5d75915c01782e5444b0e"
+
+if ($WithYourMT3) {
+    # YourMT3+ (Apache-2.0): model code from the official Space at a pinned revision, checkpoint SHA-256 checked.
+    Write-Host "Installing YourMT3+ (full-chord transcriber, ~560 MB) ..."
+    & $venvPython -m pip install -r (Join-Path $PSScriptRoot "requirements-yourmt3.txt")
+    if ($LASTEXITCODE -ne 0) { Write-Warning "YourMT3+ dependencies failed to install; Basic Pitch stays the full-chord transcriber." }
+    else {
+        $ymt3 = Join-Path $models "yourmt3"
+        & $venvPython -c "from huggingface_hub import snapshot_download as s; s(repo_id='mimbres/YourMT3', repo_type='space', revision='5e66c1ea173a8186e0d20432b841d3180cc015b5', local_dir=r'$ymt3\space', allow_patterns=['amt/src/config/*.py','amt/src/model/*.py','amt/src/model/RoPE/*.py','amt/src/utils/*.py','README.md'])"
+        if ($LASTEXITCODE -ne 0) { Write-Warning "YourMT3+ code download failed." }
+        $ck = "mc13_256_g4_all_v7_mt3f_sqr_rms_moe_wf4_n8k2_silu_rope_rp_b36_nops"
+        Get-Model "https://huggingface.co/mimbres/YourMT3/resolve/main/logs/2024/$ck/checkpoints/last.ckpt" (Join-Path $ymt3 "checkpoints\$ck\last.ckpt") "ae38e415c79efd5592dcb9b658cdb99ddb11d4c4e1eaa364cab04a052473fc25"
+    }
+}
 
 Write-Host "Verifying NVIDIA CUDA GPU detection and transcription model ..."
 & $venvPython -c "import torch; ok = torch.cuda.is_available(); print('CUDA Available:', ok); print('GPU:', torch.cuda.get_device_name(0) if ok else 'CPU fallback')"

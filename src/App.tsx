@@ -42,8 +42,9 @@ import {
 import { applySongOverrides, buildProjectFromDocument, loadServerProject, type SongOverrides } from './audio/projectModel';
 import { detectKey } from './audio/musicAnalysis';
 import { resolveTunings } from './audio/scoreExport';
+import { applyTabEdits, parseTabEdits, type PartEdit, type TabEdits } from './audio/tabEdits';
 import { quantizeDrumHits, quantizeMidiNotes } from './audio/midiEncoder';
-import { loadLocalSettings, mergeSettings, processingPayload, saveLocalSettings, type AppSettings } from './settings/appSettings';
+import { loadLocalSettings, mergeSettings, processingPayload, saveLocalSettings, type AppSettings, type ChordTranscriberId, type SeparatorId } from './settings/appSettings';
 import { SFG_TYPES, openFile, saveFileAs, writeToHandle, type FileHandleLike } from './utils/fileSystem';
 import { Header, type SaveStatus } from './components/Header';
 import { TransportBar } from './components/TransportBar';
@@ -131,6 +132,7 @@ export default function App() {
   const [guitarTuning, setGuitarTuning] = useState<GuitarTuningId | 'auto'>(settings.notation.guitarTuning);
   const [bassTuning, setBassTuning] = useState<BassTuningId | 'auto'>(settings.notation.bassTuning);
   const [notationPart, setNotationPart] = useState<NotationPart>('guitar');
+  const [tabEdits, setTabEdits] = useState<TabEdits>({});
   const [quantize, setQuantize] = useState<QuantizeGrid>(settings.midi.quantize);
   const [minVelocity, setMinVelocity] = useState(settings.midi.minVelocity);
   const [midiPreviewMode, setMidiPreviewMode] = useState<'off' | 'keyboards' | 'drums' | 'combined'>('off');
@@ -220,6 +222,7 @@ export default function App() {
       baseProjectRef.current = p;
       setDoc(null);
       setOverrides({});
+      setTabEdits({});
       setSaveStatus(p.sourceType === 'demo' ? 'none' : 'not-saved');
       setSaveMessage(p.sourceType === 'demo' ? undefined : 'Browser imports are not saved. Re-import with the Local GPU engine to keep this song.');
       setGuitarTuning(settingsRef.current.notation.guitarTuning);
@@ -320,6 +323,7 @@ export default function App() {
         setGuitarTuning((state.guitarTuning as GuitarTuningId | 'auto') ?? settingsRef.current.notation.guitarTuning);
         setBassTuning((state.bassTuning as BassTuningId | 'auto') ?? settingsRef.current.notation.bassTuning);
         if (['guitar', 'guitar1', 'guitar2', 'lead', 'bass'].includes(state.notationPart ?? '')) setNotationPart(state.notationPart as NotationPart);
+        setTabEdits(parseTabEdits(state.tabEdits));
         if (state.quantize) setQuantize(state.quantize as QuantizeGrid);
         if (typeof state.minVelocity === 'number') setMinVelocity(state.minVelocity);
         const loop = state.loop ?? loopEnabled;
@@ -416,11 +420,23 @@ export default function App() {
       quantize,
       minVelocity,
       notationPart,
+      ...(Object.keys(tabEdits).length ? { tabEdits } : {}),
     }),
-    [overrides, mixer, transpose, playbackRate, loopEnabled, metronomeEnabled, guitarTuning, bassTuning, quantize, minVelocity, notationPart]
+    [overrides, mixer, transpose, playbackRate, loopEnabled, metronomeEnabled, guitarTuning, bassTuning, quantize, minVelocity, notationPart, tabEdits]
   );
   const snapshotRef = useRef(stateSnapshot);
   snapshotRef.current = stateSnapshot;
+
+  // tab corrections replace the automatic notes of their parts in tabs, sheet music, MIDI and exports
+  const editedProject = useMemo(() => (project ? applyTabEdits(project, tabEdits) : null), [project, tabEdits]);
+  const handleTabEdit = useCallback((part: NotationPart, edit: PartEdit | undefined) => {
+    setTabEdits((prev) => {
+      const next = { ...prev };
+      if (edit) next[part] = edit;
+      else delete next[part];
+      return next;
+    });
+  }, []);
 
   const flushSave = useCallback(async (): Promise<boolean> => {
     if (!doc) return false;
@@ -660,12 +676,15 @@ export default function App() {
   );
 
   const handleReanalyze = useCallback(
-    async (mode: 'transcribe' | 'full') => {
+    async (mode: 'transcribe' | 'full', choice?: { separator?: SeparatorId; chordTranscriber?: ChordTranscriberId }) => {
       if (!doc) return;
       await flushSave();
       setReanalyzing({ stage: 'Starting', percent: 0 });
       try {
-        await reprocessProject(serverUrl, doc.id, processingPayload(settingsRef.current, { separate: mode === 'full' }));
+        const extra: Record<string, unknown> = { separate: mode === 'full' };
+        if (choice?.separator) extra.separator = choice.separator;
+        if (choice?.chordTranscriber) extra.chordTranscriber = choice.chordTranscriber;
+        await reprocessProject(serverUrl, doc.id, processingPayload(settingsRef.current, extra));
         const final = await waitForProject(serverUrl, doc.id, (st) => setReanalyzing({ stage: st.stage ?? 'Processing', percent: st.percent }));
         if (final.status === 'ready') {
           transposedCache.current.clear();
@@ -761,6 +780,7 @@ export default function App() {
         setExportState({ tab: 'audio' });
         return;
       }
+      if (e.defaultPrevented) return; // handled by the tab editor
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA')) return;
       if (exportState) return;
@@ -812,7 +832,13 @@ export default function App() {
           onChangeGuitarTuning: setGuitarTuning,
           onChangeBassTuning: setBassTuning,
           onRename: (m: { title?: string; artist?: string; album?: string }) => void handleRename(m),
-          onReanalyze: doc ? (mode: 'transcribe' | 'full') => void handleReanalyze(mode) : undefined,
+          onReanalyze: doc
+            ? (mode: 'transcribe' | 'full', choice?: { separator?: SeparatorId; chordTranscriber?: ChordTranscriberId }) => void handleReanalyze(mode, choice)
+            : undefined,
+          separatorChoices: health?.separatorChoices,
+          defaultSeparator: settings.processing.separator,
+          chordTranscriberChoices: health?.chordTranscriberChoices,
+          defaultChordTranscriber: settings.processing.chordTranscriber,
           reanalyzing,
         }
       : null;
@@ -924,7 +950,7 @@ export default function App() {
           />
         ) : activeView === 'midi' ? (
           <MidiStudioView
-            project={project}
+            project={editedProject ?? project}
             currentTime={currentTime}
             transpose={transpose}
             quantize={quantize}
@@ -942,7 +968,10 @@ export default function App() {
           />
         ) : activeView === 'notation' ? (
           <NotationView
-            project={project}
+            project={editedProject ?? project}
+            autoProject={project}
+            tabEdits={tabEdits}
+            onTabEdit={handleTabEdit}
             currentTime={currentTime}
             transpose={transpose}
             onSeek={handleSeek}
@@ -1017,7 +1046,7 @@ export default function App() {
 
       {exportState && project && resolvedTunings && (
         <ExportDialog
-          project={project}
+          project={editedProject ?? project}
           mixer={mixer}
           transpose={transpose}
           playbackRate={playbackRate}
