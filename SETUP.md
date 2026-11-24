@@ -73,6 +73,18 @@ The download is about 3 GB (mostly PyTorch), and the environment takes about 5 G
 
 ## 4. Daily Use
 
+### Desktop app (recommended)
+
+Build the launcher and desktop shortcut once:
+
+```powershell
+.\desktop\build-desktop-app.ps1
+```
+
+From then on, double-click **StemForge** on your desktop. A small "Starting…" splash appears while the GPU engine loads (about 5–10 seconds). StemForge then opens in its own window with the Local GPU engine already selected. Close the window and the GPU engine stops, giving the VRAM back to ComfyUI or games. If startup fails, check `logs\stemforge-server.log`.
+
+### Developer mode
+
 Double-click **`Start StemForge.cmd`**, or run:
 
 ```powershell

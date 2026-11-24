@@ -67,11 +67,28 @@ export function resolveStemUrl(baseUrl: string, stemPath: string): string {
   return `${cleanBase}${cleanPath}`;
 }
 
+/**
+ * True when the page itself is being served by the local GPU server (desktop app mode,
+ * launched by StemForge.exe), i.e. same origin as the default server URL.
+ */
+export function isServedByGpuServer(): boolean {
+  try {
+    return window.location.origin === DEFAULT_GPU_SERVER_URL;
+  } catch {
+    return false;
+  }
+}
+
 export function loadSavedGpuConfig(): GpuServerConfig {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      return { mode: 'browser', serverUrl: DEFAULT_GPU_SERVER_URL, pianoOnly: false };
+      // Desktop app: the GPU server is guaranteed to be running, so use it by default.
+      return {
+        mode: isServedByGpuServer() ? 'gpu' : 'browser',
+        serverUrl: DEFAULT_GPU_SERVER_URL,
+        pianoOnly: false,
+      };
     }
     const parsed = JSON.parse(raw) as Partial<GpuServerConfig>;
     return {

@@ -32,6 +32,19 @@ cd ..
 
 Then in the app (http://localhost:3000): **Library** → **Local GPU (Demucs RTX)** → **Test GPU Connection** → drop a song or video.
 
+### Desktop app (StemForge.exe + desktop shortcut)
+
+```powershell
+.\desktop\build-desktop-app.ps1
+```
+
+This builds `StemForge.exe` in the StemForge folder and adds a **StemForge** shortcut to your desktop. Double-click it and StemForge:
+1. starts the GPU server in the background (no console window), which also serves the app at http://127.0.0.1:8000,
+2. opens StemForge in its own app window (Edge/Chrome app mode) with the GPU engine already selected,
+3. stops the server and frees GPU memory when you close the window.
+
+It rebuilds the web app automatically when the source changes (for example after a `git pull`). Server output is written to `logs\stemforge-server.log`. The exe is built locally and is not committed to git.
+
 Linux / WSL2 / macOS: `cd local-gpu-server && ./setup_unix.sh && ./start_unix.sh`, then `npm run dev` in the repo root.
 
 ---

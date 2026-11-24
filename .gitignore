@@ -68,3 +68,7 @@ desktop.ini
 CLAUDE.local.md
 *.local.json
 .mcp.json
+
+# Desktop app build output (rebuilt by desktop/build-desktop-app.ps1)
+/StemForge.exe
+*.lnk

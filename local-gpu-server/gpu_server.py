@@ -490,3 +490,15 @@ def delete_job(job_id: str):
     _jobs.pop(job_id, None)
     shutil.rmtree(JOB_ROOT / job_id, ignore_errors=True)
     return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Desktop mode: serve the built web app (../dist) from this same server so the
+# StemForge.exe launcher only needs one local process: http://127.0.0.1:8000
+# (Mounted last so the API routes above always take precedence.)
+# ---------------------------------------------------------------------------
+_DIST_DIR = Path(os.environ.get("STEMFORGE_DIST_DIR", str(_HERE.parent / "dist")))
+if (_DIST_DIR / "index.html").is_file():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=str(_DIST_DIR), html=True), name="webapp")
