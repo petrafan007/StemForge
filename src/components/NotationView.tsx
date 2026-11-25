@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, Download, FileMusic, Minus, Pencil, Plus, Printer, Redo2, Undo2 } from 'lucide-react';
+import { Check, Copy, Download, FileMusic, Headphones, Minus, Pencil, Plus, Printer, Redo2, Undo2 } from 'lucide-react';
 import type {
   BassTuningId,
   ChordEvent,
@@ -29,6 +29,7 @@ import { keyToFifths } from '../audio/musicXml';
 import { TabStaff } from './TabStaff';
 import { barCountTo, barStartsFor, toggleBarLine, DEFAULT_BAR_SETTINGS, type BarSettings } from '../audio/bars';
 import { useTabEditor } from './useTabEditor';
+import { chordVoices, notesToVoices, partStems, type PartListen, type PartPlayback } from '../audio/partPlayback';
 import { useStickyHeightVar } from '../utils/stickyHeight';
 import type { PartEdit, TabEdits } from '../audio/tabEdits';
 import { ScoreView, printScore } from './ScoreView';
@@ -81,7 +82,19 @@ interface NotationViewProps {
   onBarSettings?: (settings: BarSettings) => void;
   tabEdits?: TabEdits;
   onTabEdit?: (part: NotationPart, edit: PartEdit | undefined) => void;
+  /** Plays the shown part (tab / sheet music / chords) on a synth (null = just the recording). */
+  onPartPlayback?: (spec: PartPlayback | null) => void;
 }
+
+/** What "Hear" was set to (kept while the app runs, so leaving the page and coming back keeps it). */
+let sessionListen: PartListen = 'recording';
+
+const LISTEN_OPTIONS: Array<{ id: PartListen; label: string; title: (what: string) => string }> = [
+  { id: 'recording', label: 'Recording', title: () => 'The song as recorded' },
+  { id: 'midi', label: 'MIDI', title: (what) => `${what} played by a synth instead of its recorded track (the rest of the band keeps playing)` },
+  { id: 'both', label: 'Both', title: (what) => `${what} played by a synth on top of the recording, to hear where they differ` },
+  { id: 'solo', label: 'MIDI solo', title: (what) => `Only ${what.toLowerCase()} played by a synth (everything else silent)` },
+];
 
 function ChordFretboardDiagram({
   voicing,
@@ -249,6 +262,7 @@ export function NotationView({
   onTabEdit,
   barSettings,
   onBarSettings,
+  onPartPlayback,
 }: NotationViewProps) {
   const availableParts = notationParts(project);
   const part: NotationPart = availableParts.includes(requestedPart) ? requestedPart : 'guitar';
@@ -392,6 +406,34 @@ export function NotationView({
     [tabNotes, prefs.detail, prefs.colWidth, prefs.minVelocity, beatsPerMeasure, totalBeats, tabWidth, tuning, transposedChords, barStarts, tabEditing]
   );
 
+  // ---- Hear: the shown part (tab / sheet music / chord chart) on a synth
+  const [listen, setListenState] = useState<PartListen>(sessionListen);
+  const setListen = (l: PartListen) => {
+    sessionListen = l;
+    setListenState(l);
+  };
+  const partVoices = useMemo(() => {
+    if (mode === 'chords') {
+      // strummed low to high, 12 ms per string
+      return chordVoices(project.chords, instrument, transpose, barStarts, beatsPerMeasure, (0.012 * project.bpm) / 60);
+    }
+    if (mode === 'sheet') {
+      return notesToVoices(tabNotes.map((n) => ({ beat: n.startBeat, endBeat: n.startBeat + n.durationBeats, midi: n.midi, velocity: n.velocity })));
+    }
+    // the notes exactly as the tab shows them (merged duplicates, hidden soft notes, corrections)
+    const shown: Array<{ beat: number; endBeat: number; midi: number; velocity: number }> = [];
+    for (const row of tabLayout.rows) for (const m of row.measures) for (const n of m.notes) shown.push(n);
+    return notesToVoices(shown);
+  }, [mode, project.chords, project.bpm, instrument, transpose, barStarts, beatsPerMeasure, tabNotes, tabLayout]);
+  const playStems = useMemo(() => partStems(project, part), [project.stems, part]); // eslint-disable-line react-hooks/exhaustive-deps
+  const partPlaybackRef = useRef(onPartPlayback);
+  partPlaybackRef.current = onPartPlayback;
+  useEffect(() => {
+    partPlaybackRef.current?.(listen === 'recording' ? null : { voices: partVoices, instrument, stems: playStems, listen });
+  }, [listen, partVoices, instrument, playStems]);
+  useEffect(() => () => partPlaybackRef.current?.(null), []);
+  const hearWhat = `The ${partName.toLowerCase()} ${mode === 'chords' ? 'chord chart' : mode === 'sheet' ? 'sheet music' : 'tab'}`;
+
   const editor = useTabEditor({
     project,
     autoProject: autoProject ?? project,
@@ -530,6 +572,37 @@ export function NotationView({
                 </button>
               ))}
             </div>
+
+            {/* Hear: recording / the part's MIDI instead / both / MIDI alone */}
+            {onPartPlayback && (
+              <div
+                role="group"
+                aria-label="What to hear"
+                className="inline-flex items-center p-1 bg-[#13161C] border border-white/[0.08] rounded-md"
+              >
+                <span className="pl-1.5 pr-1 text-slate-400" title={`Hear ${hearWhat.toLowerCase()} played by a synth`}>
+                  <Headphones className="w-3.5 h-3.5" aria-hidden="true" />
+                </span>
+                {LISTEN_OPTIONS.map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    aria-pressed={listen === o.id}
+                    onClick={() => setListen(o.id)}
+                    title={o.title(hearWhat)}
+                    className={`px-2.5 py-1.5 text-xs font-medium rounded whitespace-nowrap shrink-0 cursor-pointer ${
+                      listen === o.id
+                        ? o.id === 'recording'
+                          ? 'bg-white/20 text-white font-semibold'
+                          : 'bg-emerald-400 text-[#0B0D10] font-semibold'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* Tuning selector (Auto = detected from the notes) */}
             {(mode === 'tabs' || mode === 'sheet') && (

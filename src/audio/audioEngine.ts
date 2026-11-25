@@ -3,6 +3,8 @@ import { ALL_STEM_IDS } from '../types/music';
 import { midiToFrequency } from './notationEngine';
 import { barStartsFor, isBarStart } from './bars';
 import { beatToTime, quarterBeatsPerMeasure, timeToBeat } from './timeline';
+import { firstVoiceAt, PLUCK_VOICES, renderPluck, type PluckInstrument } from './pluckSynth';
+import type { PartPlayback } from './partPlayback';
 
 /**
  * Pitch handling:
@@ -39,6 +41,16 @@ export class MultiStemAudioEngine {
   private pausedOffsetSec = 0;
   private schedulerTimer: number | null = null;
   private lastScheduledBeat = -1;
+  /** Beat up to which MIDI preview / part notes have been scheduled (each note is scheduled once). */
+  private auxScheduledTo = Number.NEGATIVE_INFINITY;
+  private partScheduledTo = Number.NEGATIVE_INFINITY;
+
+  // "Hear the part" (Tabs & Sheet): the part's notes on a plucked-string synth
+  private partPlayback: PartPlayback | null = null;
+  private partBus: GainNode | null = null;
+  private partTone: BiquadFilterNode | null = null;
+  private pluckCache = new Map<string, { buffer: AudioBuffer; rate: number }>();
+  private partVoices = new Set<{ src: AudioBufferSourceNode; gain: GainNode }>();
 
   public ensureContext(): AudioContext {
     if (!this.ctx) {
@@ -87,6 +99,19 @@ export class MultiStemAudioEngine {
   public updateMidiData(keyNotes: MidiNoteEvent[], drumHits: DrumHitEvent[]): void {
     this.midiKeyNotes = keyNotes;
     this.midiDrumHits = drumHits;
+  }
+
+  /**
+   * Plays a part's notes (tab / sheet music / chord chart) on a plucked-string synth, replacing its
+   * recorded track ('midi'), on top of it ('both') or alone ('solo'). null = only the recording.
+   */
+  public setPartPlayback(spec: PartPlayback | null): void {
+    const prev = this.partPlayback;
+    this.partPlayback = spec;
+    const otherPart = !spec || !prev || prev.instrument !== spec.instrument || prev.stems.join() !== spec.stems.join();
+    if (otherPart) this.silencePartVoices();
+    if (spec && this.ctx) this.ensurePartBus(spec.instrument);
+    this.applyMixerGains();
   }
 
   public setMidiPreviewMode(mode: 'off' | 'keyboards' | 'drums' | 'combined'): void {
@@ -220,6 +245,7 @@ export class MultiStemAudioEngine {
     this.isPlaying = false;
     this.pausedOffsetSec = 0;
     this.lastScheduledBeat = -1;
+    this.resetAuxSchedule();
   }
 
   public seek(timeSec: number): void {
@@ -227,6 +253,7 @@ export class MultiStemAudioEngine {
     const clamped = Math.max(0, Math.min(this.project.duration, timeSec));
     this.pausedOffsetSec = clamped;
     this.lastScheduledBeat = -1;
+    this.resetAuxSchedule();
     if (this.isPlaying) {
       this.startFrom(clamped);
     }
@@ -270,6 +297,8 @@ export class MultiStemAudioEngine {
     this.pausedOffsetSec = offsetSec;
     this.isPlaying = true;
     this.lastScheduledBeat = -1;
+    // notes right at the start position play too (the first scheduler tick comes up to 60 ms later)
+    this.resetAuxSchedule(timeToBeat(this.project, offsetSec) - 1e-6);
 
     for (const id of ALL_STEM_IDS) {
       const stem = this.project.stems[id];
@@ -323,6 +352,9 @@ export class MultiStemAudioEngine {
       ) {
         effectiveGain *= 0.15;
       }
+      // hearing a part's tab / sheet / chords: its track is replaced (or everything, for 'solo')
+      const part = this.partPlayback;
+      if (part && (part.listen === 'solo' || (part.listen === 'midi' && part.stems.includes(id)))) effectiveGain = 0;
 
       gainNode.gain.setTargetAtTime(effectiveGain, now, 0.015);
       panNode.pan.setTargetAtTime(state.pan, now, 0.015);
@@ -353,9 +385,23 @@ export class MultiStemAudioEngine {
         }
       }
 
+      const part = this.partPlayback;
+      if (part) {
+        // ~150 ms ahead; a late timer tick still plays the notes it missed (a little late, not dropped)
+        const to = timeToBeat(grid, curTime + 0.15 * rate);
+        const from = this.scheduleFrom(this.partScheduledTo, currentBeat, curTime, rate);
+        for (let i = firstVoiceAt(part.voices, from); i < part.voices.length && part.voices[i].beat < to; i++) {
+          const v = part.voices[i];
+          const dt = Math.max(0, at(v.beat));
+          this.schedulePluck(part.instrument, v.midi, this.ctx.currentTime + dt, Math.max(0.06, at(v.endBeat) - at(v.beat)), v.velocity);
+        }
+        this.partScheduledTo = Math.max(to, from);
+      }
+
       if (this.midiPreviewMode !== 'off') {
-        const winStart = currentBeat;
-        const winEnd = currentBeat + lookaheadBeats;
+        const winStart = this.scheduleFrom(this.auxScheduledTo, currentBeat, curTime, rate);
+        const winEnd = Math.max(winStart, currentBeat + lookaheadBeats);
+        this.auxScheduledTo = winEnd;
 
         if (this.midiPreviewMode === 'keyboards' || this.midiPreviewMode === 'combined') {
           for (const n of this.midiKeyNotes) {
@@ -382,6 +428,87 @@ export class MultiStemAudioEngine {
         }
       }
     }, 60);
+  }
+
+  private resetAuxSchedule(fromBeat = Number.NEGATIVE_INFINITY): void {
+    this.auxScheduledTo = fromBeat;
+    this.partScheduledTo = fromBeat;
+  }
+
+  /**
+   * Where this scheduler tick continues from: where the last one ended, or after a jump (seek, loop)
+   * from just before the playhead, so notes due in the last 100 ms still play (a little late).
+   */
+  private scheduleFrom(prev: number, currentBeat: number, curTime: number, rate: number): number {
+    if (Number.isFinite(prev) && currentBeat >= prev - 1 && currentBeat - prev < 0.5) return prev;
+    return this.project ? Math.min(currentBeat, timeToBeat(this.project, Math.max(0, curTime - 0.1 * rate))) : currentBeat;
+  }
+
+  /** The part synth's output: level and tone per instrument, into the master limiter. */
+  private ensurePartBus(instrument: PluckInstrument): GainNode {
+    const ctx = this.ensureContext();
+    if (!this.partBus || !this.partTone) {
+      this.partBus = ctx.createGain();
+      this.partTone = ctx.createBiquadFilter();
+      this.partTone.type = 'lowpass';
+      this.partTone.Q.value = 0.5;
+      this.partBus.connect(this.partTone);
+      this.partTone.connect(this.masterLimiter ?? this.masterGain!);
+    }
+    this.partBus.gain.value = instrument === 'bass' ? 1.1 : 0.85;
+    this.partTone.frequency.value = PLUCK_VOICES[instrument].tone;
+    return this.partBus;
+  }
+
+  private schedulePluck(instrument: PluckInstrument, midi: number, time: number, duration: number, velocity: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const bus = this.ensurePartBus(instrument);
+    const key = `${instrument}:${midi}`;
+    let pluck = this.pluckCache.get(key);
+    if (!pluck) {
+      const r = renderPluck(midi, ctx.sampleRate, PLUCK_VOICES[instrument]);
+      const buffer = ctx.createBuffer(1, r.data.length, ctx.sampleRate);
+      buffer.getChannelData(0).set(r.data);
+      if (this.pluckCache.size > 160) this.pluckCache.clear();
+      pluck = { buffer, rate: r.rate };
+      this.pluckCache.set(key, pluck);
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = pluck.buffer;
+    // speed changes are tape-style (pitch follows), so the synth follows them to stay in tune
+    src.playbackRate.value = pluck.rate * this.playbackRate;
+    const gain = ctx.createGain();
+    const amp = 0.06 + 0.2 * Math.max(0, Math.min(1, velocity / 127));
+    const end = time + Math.min(duration, pluck.buffer.duration / src.playbackRate.value);
+    gain.gain.setValueAtTime(amp, time);
+    gain.gain.setTargetAtTime(0, end, 0.02); // the string is damped when the note ends
+    src.connect(gain).connect(bus);
+    src.start(time);
+    src.stop(end + 0.15);
+    const voice = { src, gain };
+    this.partVoices.add(voice);
+    src.onended = () => {
+      this.partVoices.delete(voice);
+      gain.disconnect();
+    };
+  }
+
+  /** Quickly fades out every sounding part note (pause, stop, seek, another part). */
+  private silencePartVoices(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    for (const v of this.partVoices) {
+      try {
+        v.gain.gain.cancelScheduledValues(now);
+        v.gain.gain.setTargetAtTime(0, now, 0.01);
+        v.src.stop(now + 0.06);
+      } catch {
+        // already stopped
+      }
+    }
+    this.partVoices.clear();
   }
 
   private scheduleClick(ctx: AudioContext, time: number, accent: boolean): void {
@@ -461,6 +588,7 @@ export class MultiStemAudioEngine {
       window.clearInterval(this.schedulerTimer);
       this.schedulerTimer = null;
     }
+    this.silencePartVoices();
     Object.values(this.sources).forEach((src) => {
       if (!src) return;
       try {

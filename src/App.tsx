@@ -45,6 +45,7 @@ import { resolveTunings } from './audio/scoreExport';
 import { applyTabEdits, parseTabEdits, type PartEdit, type TabEdits } from './audio/tabEdits';
 import { DEFAULT_BAR_SETTINGS, parseBarSettings, type BarSettings } from './audio/bars';
 import { useStickyHeightVar } from './utils/stickyHeight';
+import type { PartPlayback } from './audio/partPlayback';
 import { quantizeDrumHits, quantizeMidiNotes } from './audio/midiEncoder';
 import { loadLocalSettings, mergeSettings, processingPayload, saveLocalSettings, type AppSettings, type ChordTranscriberId, type SeparatorId } from './settings/appSettings';
 import { SFG_TYPES, openFile, saveFileAs, writeToHandle, type FileHandleLike } from './utils/fileSystem';
@@ -838,6 +839,8 @@ export default function App() {
 
   useStickyHeightVar(transportWrapRef, '--sf-transport-h', Boolean(project));
 
+  const handlePartPlayback = useCallback((spec: PartPlayback | null) => engineRef.current?.setPartPlayback(spec), []);
+
   // ---------------------------------------------------------------- render
   const songEditing =
     project && baseProjectRef.current && resolvedTunings
@@ -1014,8 +1017,10 @@ export default function App() {
             currentTime={currentTime}
             transpose={transpose}
             onSeek={handleSeek}
-            onPreviewNote={(midi, dur) => engineRef.current?.triggerPreviewNote(midi, dur, false)}
+            // tab / editor notes are the shown pitch (key change included); the engine adds the key change
+            onPreviewNote={(midi, dur) => engineRef.current?.triggerPreviewNote(midi - transpose, dur, false)}
             onPreviewChord={(midis) => engineRef.current?.triggerChordPreview(midis)}
+            onPartPlayback={handlePartPlayback}
             part={notationPart}
             onChangePart={setNotationPart}
             guitarTuning={guitarTuning}
