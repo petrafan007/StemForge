@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { TabNoteEvent } from '../types/music';
-import { beatX, layoutTab, locateBeat, quantizeTabNotes } from './tabLayout';
+import { beatX, cellAtPoint, cellBox, cellsBetween, columnCount, layoutTab, locateBeat, quantizeTabNotes } from './tabLayout';
 import { GUITAR_TUNINGS, generateAsciiTab } from './notationEngine';
 import { encodeMusicXml } from './musicXml';
 
@@ -89,4 +89,41 @@ test('tab notes keep their real start so the highlight follows the audio, not th
   // a held note ends where the next note on the same string really starts
   const held = quantizeTabNotes([{ ...n('c', 0, 0), durationBeats: 2 }, n('d', 0.62, 2)], 0.25).notes;
   assert.equal(held[0].endBeat, 0.62);
+});
+
+test('cellAtPoint and cellBox map spots of the tab to positions and back', () => {
+  const notes = [tn(5, 3, 0), tn(2, 5, 4.5)];
+  const layout = layoutTab(notes, { grid: 0.25, colWidth: 20, beatsPerMeasure: 4, totalBeats: 16, containerWidth: 2000, strings: 6, compactEmpty: false });
+  // every spot's center maps back to that spot, across bars and rows
+  for (const cell of [{ col: 0, string: 0 }, { col: 7, string: 5 }, { col: 18, string: 2 }, { col: 63, string: 3 }]) {
+    const b = cellBox(layout, cell);
+    assert.ok(b, `no box for ${cell.col}:${cell.string}`);
+    assert.deepEqual(cellAtPoint(layout, b.cx, b.cy), cell);
+    assert.deepEqual(cellAtPoint(layout, b.left + 1, b.cy + layout.stringGap * 0.4), cell);
+  }
+  assert.equal(columnCount(layout), 64);
+  // the drawn notes sit in their spots
+  const n = layout.rows[0].measures[1].notes[0];
+  const nb = cellBox(layout, { col: n.col, string: n.stringIndex })!;
+  assert.ok(Math.abs(nb.cx - (layout.labelWidth + layout.rows[0].measures[1].x + n.x)) < 1e-6);
+  // above the staff (bar numbers) is not a spot unless clamped while dragging
+  assert.equal(cellAtPoint(layout, nb.cx, 5), null);
+  assert.deepEqual(cellAtPoint(layout, nb.cx, 5, true), { col: n.col, string: 0 });
+  assert.deepEqual(cellAtPoint(layout, 1e6, nb.cy, true)?.string, n.stringIndex);
+});
+
+test('empty bars are compressed unless editing', () => {
+  const notes = [tn(5, 3, 0)];
+  const compact = layoutTab(notes, { grid: 0.25, colWidth: 20, beatsPerMeasure: 4, totalBeats: 8, containerWidth: 2000, strings: 6 });
+  const full = layoutTab(notes, { grid: 0.25, colWidth: 20, beatsPerMeasure: 4, totalBeats: 8, containerWidth: 2000, strings: 6, compactEmpty: false });
+  assert.ok(compact.rows[0].measures[1].width < compact.rows[0].measures[0].width);
+  assert.equal(full.rows[0].measures[1].width, full.rows[0].measures[0].width);
+});
+
+test('cellsBetween covers a string, a column or the rectangle between two spots', () => {
+  assert.deepEqual(cellsBetween({ col: 4, string: 1 }, { col: 7, string: 1 }).map((c) => c.col), [4, 5, 6, 7]);
+  assert.deepEqual(cellsBetween({ col: 8, string: 1 }, { col: 6, string: 1 }).map((c) => c.col), [8, 7, 6]);
+  assert.deepEqual(cellsBetween({ col: 2, string: 4 }, { col: 2, string: 1 }).map((c) => c.string), [4, 3, 2, 1]);
+  assert.equal(cellsBetween({ col: 0, string: 0 }, { col: 2, string: 1 }).length, 6);
+  assert.equal(cellsBetween({ col: 0, string: 0 }, { col: 999, string: 5 }, 100).length, 100);
 });

@@ -80,6 +80,8 @@ export interface TabLayoutOptions {
   chords?: Array<{ startBeat: number; symbol: string }>;
   /** Bar starts (quarter beats, src/audio/bars.ts); default: bars of beatsPerMeasure. */
   barStarts?: number[];
+  /** Draw empty bars narrow (default). Off while editing, so notes can be placed in them. */
+  compactEmpty?: boolean;
 }
 
 export const TAB_LABEL_WIDTH = 30;
@@ -178,7 +180,7 @@ export function layoutTab(source: TabNoteEvent[], opts: TabLayoutOptions): TabLa
     const { startCol, steps, startBeat, lengthBeats } = bars[m];
     const fullWidth = TAB_PAD_LEFT + steps * opts.colWidth + TAB_PAD_RIGHT;
     const empty = list.length === 0;
-    const width = empty ? Math.min(fullWidth, Math.max(56, fullWidth * 0.3)) : fullWidth;
+    const width = empty && opts.compactEmpty !== false ? Math.min(fullWidth, Math.max(56, fullWidth * 0.3)) : fullWidth;
     const scale = empty ? (width - TAB_PAD_LEFT - TAB_PAD_RIGHT) / (steps * opts.colWidth) : 1;
     const xOf = (col: number) => TAB_PAD_LEFT + (col - startCol + 0.5) * opts.colWidth * scale;
     const chords: TabLayoutChord[] = [];
@@ -262,4 +264,84 @@ export function locateBeat(layout: TabLayout, beat: number): { row: TabLayoutRow
     for (let i = row.measures.length - 1; i >= 0; i--) if (row.measures[i].startBeat <= beat) return { row, measure: row.measures[i] };
   }
   return null;
+}
+
+// ------------------------------------------------------------------------------- editing helpers
+
+/** One spot of the tab: a grid column on a string (0 = highest string, drawn on top). */
+export interface TabCell {
+  col: number;
+  string: number;
+}
+
+/** Width (px) of one grid column inside a measure (empty measures can be narrower). */
+function cellWidth(layout: TabLayout, m: TabLayoutMeasure): number {
+  return (m.width - layout.padLeft - layout.padRight) / Math.max(1, m.steps) || layout.colWidth;
+}
+
+/**
+ * The spot under a point given relative to the tab's top-left corner. `clamp` (while dragging)
+ * returns the nearest spot instead of null when the point is between rows or off the staff.
+ */
+export function cellAtPoint(layout: TabLayout, x: number, y: number, clamp = false): TabCell | null {
+  if (!layout.rows.length) return null;
+  const pitch = layout.rowHeight + layout.rowGap;
+  let r = Math.floor(y / pitch);
+  if (r < 0 || r >= layout.rows.length) {
+    if (!clamp) return null;
+    r = Math.max(0, Math.min(layout.rows.length - 1, r));
+  }
+  const row = layout.rows[r];
+  const fromTop = y - row.top - layout.staffTop;
+  let s = Math.round(fromTop / layout.stringGap);
+  if (s < 0 || s >= layout.strings || Math.abs(fromTop - s * layout.stringGap) > layout.stringGap / 2) {
+    if (!clamp) return null;
+    s = Math.max(0, Math.min(layout.strings - 1, s));
+  }
+  const mx = x - layout.labelWidth;
+  let mi = row.measures.findIndex((m) => mx >= m.x && mx < m.x + m.width);
+  if (mi < 0) {
+    if (!clamp) return null;
+    mi = mx < 0 ? 0 : row.measures.length - 1;
+  }
+  const m = row.measures[mi];
+  const c = Math.max(0, Math.min(m.steps - 1, Math.floor((mx - m.x - layout.padLeft) / cellWidth(layout, m))));
+  return { col: m.startCol + c, string: s };
+}
+
+/** Where a spot is drawn (relative to the tab's top-left corner), or null past the last bar. */
+export function cellBox(layout: TabLayout, cell: TabCell): { left: number; width: number; cx: number; cy: number } | null {
+  for (const row of layout.rows) {
+    for (const m of row.measures) {
+      if (cell.col < m.startCol || cell.col >= m.startCol + m.steps) continue;
+      const w = cellWidth(layout, m);
+      const left = layout.labelWidth + m.x + layout.padLeft + (cell.col - m.startCol) * w;
+      return { left, width: w, cx: left + w / 2, cy: row.top + layout.staffTop + cell.string * layout.stringGap };
+    }
+  }
+  return null;
+}
+
+/** Number of grid columns in the tab. */
+export function columnCount(layout: TabLayout): number {
+  const row = layout.rows[layout.rows.length - 1];
+  const m = row?.measures[row.measures.length - 1];
+  return m ? m.startCol + m.steps : 0;
+}
+
+/**
+ * The spots a drag from `a` to `b` covers: along a string (tremolo), across strings at one column
+ * (a chord / barre), or the rectangle between them. At most `limit` spots, nearest to `a` first.
+ */
+export function cellsBetween(a: TabCell, b: TabCell, limit = 256): TabCell[] {
+  const out: TabCell[] = [];
+  const dc = b.col >= a.col ? 1 : -1;
+  const ds = b.string >= a.string ? 1 : -1;
+  for (let col = a.col; dc > 0 ? col <= b.col : col >= b.col; col += dc) {
+    for (let s = a.string; ds > 0 ? s <= b.string : s >= b.string; s += ds) {
+      if (out.length >= limit) return out;
+      out.push({ col, string: s });
+    }
+  }
+  return out;
 }

@@ -326,6 +326,8 @@ export function NotationView({
   const barStarts = useMemo(() => barStartsFor(project), [project]);
   const totalMeasures = barCountTo(barStarts, totalBeats, beatsPerMeasure);
   const [barMode, setBarMode] = useState(false);
+  // tab correction mode (src/components/useTabEditor.ts); empty bars are drawn full width while editing
+  const [tabEditing, setTabEditing] = useState(false);
   const handleBeatClick = useCallback(
     (beat: number) => {
       if (!onBarSettings) return;
@@ -385,8 +387,9 @@ export function NotationView({
         minVelocity: prefs.minVelocity,
         chords: transposedChords.map((c) => ({ startBeat: c.startBeat, symbol: c.displaySymbol })),
         barStarts,
+        compactEmpty: !tabEditing,
       }),
-    [tabNotes, prefs.detail, prefs.colWidth, prefs.minVelocity, beatsPerMeasure, totalBeats, tabWidth, tuning, transposedChords, barStarts]
+    [tabNotes, prefs.detail, prefs.colWidth, prefs.minVelocity, beatsPerMeasure, totalBeats, tabWidth, tuning, transposedChords, barStarts, tabEditing]
   );
 
   const editor = useTabEditor({
@@ -395,6 +398,8 @@ export function NotationView({
     part,
     edit: tabEdits?.[part],
     onTabEdit: onTabEdit ?? (() => undefined),
+    editing: tabEditing,
+    setEditing: setTabEditing,
     layout: tabLayout,
     tuning,
     transpose,
@@ -763,7 +768,14 @@ export function NotationView({
                 <Redo2 className="w-3 h-3" aria-hidden="true" /> Redo
               </button>
               <span className="text-slate-400">
-                Click a fret to select · click an empty spot on a string to add · type a fret number · ↑↓ other string · Shift+↑↓ pitch · Del delete · click a bar number to mark it checked
+                Click selects · double-click adds / removes a note · drag along a string or across strings to add notes · drag a note to move it · type a fret + Enter · ↑↓ other string · Shift+↑↓ pitch · Del delete · click a bar number to mark it checked
+              </span>
+              <span className="font-mono text-slate-300 min-w-[10.5rem]" title="The fret double-clicks and drags add: the last fret you selected, typed or added. Ctrl+drag from a note adds that note's fret.">
+                {editor.typedFret ? (
+                  <span className="text-sky-300">Fret {editor.typedFret}: press Enter</span>
+                ) : (
+                  <>New notes: fret {editor.fillFret}</>
+                )}
               </span>
               <span className="ml-auto flex items-center gap-2">
                 <button type="button" onClick={editor.discard} className="px-2 py-1 rounded text-rose-300 hover:bg-rose-500/10 cursor-pointer">
@@ -775,10 +787,17 @@ export function NotationView({
               </span>
             </div>
           )}
-          {partEdit && editor.score && (
+          {/* while editing the line is always there, so the tab doesn't jump when the first bar gets checked */}
+          {((partEdit && editor.score) || editor.editing) && (
             <div className="px-4 py-1.5 border-b border-white/[0.06] text-[11px] text-slate-400 font-mono" title="How the automatic transcription compares with your corrections in the bars you checked: a note counts when you kept the same pitch starting within 50 ms">
-              Automatic transcription vs your corrections in {editor.score.bars} checked bar{editor.score.bars === 1 ? '' : 's'}: {Math.round(editor.score.f * 100)}% match
-              {' '}(right notes {editor.score.matched}/{editor.score.reference}, extra notes {editor.score.detected - editor.score.matched})
+              {editor.score ? (
+                <>
+                  Automatic transcription vs your corrections in {editor.score.bars} checked bar{editor.score.bars === 1 ? '' : 's'}: {Math.round(editor.score.f * 100)}% match
+                  {' '}(right notes {editor.score.matched}/{editor.score.reference}, extra notes {editor.score.detected - editor.score.matched})
+                </>
+              ) : (
+                'No checked bars yet: bars you edit or click the number of are scored against the automatic transcription'
+              )}
             </div>
           )}
 
@@ -799,8 +818,14 @@ export function NotationView({
                 onSeekBeat={handleSeekBeat}
                 editing={editor.editing}
                 selectedId={editor.selectedId}
+                selectedCell={editor.selectedCell}
+                typedFret={editor.typedFret}
+                fillFret={editor.fillFret}
                 checkedBars={editor.checkedBars}
-                onCellClick={editor.addAt}
+                onSelectCell={editor.selectCell}
+                onAddNotes={editor.addNotes}
+                onDeleteNote={editor.deleteNote}
+                onMoveNote={editor.moveNote}
                 onBarClick={editor.toggleBar}
                 barMode={barMode && !editor.editing}
                 onBeatClick={handleBeatClick}
