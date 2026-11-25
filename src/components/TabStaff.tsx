@@ -154,9 +154,9 @@ const TabRow = memo(function TabRow({
                   </g>
                 );
               })}
-              {/* odd bar length (e.g. 3/4 inside 4/4) */}
+              {/* odd bar length (e.g. 3/4 inside 4/4), under the staff so it never meets a chord name */}
               {Math.abs(m.lengthBeats - layout.beatsPerMeasure) > 1e-6 && (
-                <text x={m.width - 4} y={12} textAnchor="end" fontSize={9} fontFamily="JetBrains Mono, monospace" fill="#38BDF8">
+                <text x={m.width - 4} y={staffBottom + 19} textAnchor="end" fontSize={9} fontFamily="JetBrains Mono, monospace" fill="#38BDF8">
                   {Math.round(m.lengthBeats * 100) / 100}/4
                 </text>
               )}

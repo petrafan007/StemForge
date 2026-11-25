@@ -1,4 +1,4 @@
-import { Loader2, Pause, Play, Repeat, Square, Timer, Minus, Plus } from 'lucide-react';
+import { Loader2, Pause, Play, Repeat, RotateCcw, RotateCw, Square, Timer, Minus, Plus } from 'lucide-react';
 import type { SongProject } from '../types/music';
 import { formatKeySignature } from '../audio/notationEngine';
 import { barPosition, barStartsFor } from '../audio/bars';
@@ -15,6 +15,8 @@ interface TransportBarProps {
   transpose: number;
   onTogglePlay: () => void;
   onStop: () => void;
+  /** Jump by `delta` seconds (back / forward 5 s buttons). */
+  onSkip?: (delta: number) => void;
   onSeek: (timeSec: number) => void;
   onToggleLoop: () => void;
   onToggleMetronome: () => void;
@@ -29,6 +31,28 @@ interface TransportBarProps {
 
 const SPEED_OPTIONS = [0.75, 0.85, 1.0, 1.15, 1.25];
 
+/** Back / forward button: a circular arrow with the number of seconds inside it. */
+function SkipButton({ seconds, onSkip }: { seconds: number; onSkip: (delta: number) => void }) {
+  const back = seconds < 0;
+  const n = Math.abs(seconds);
+  const Icon = back ? RotateCcw : RotateCw;
+  const label = `${back ? 'Back' : 'Forward'} ${n} seconds (${back ? '←' : '→'} key)`;
+  return (
+    <button
+      type="button"
+      onClick={() => onSkip(seconds)}
+      aria-label={label}
+      title={label}
+      className="relative w-10 h-10 inline-flex items-center justify-center rounded-md bg-[#1B1F27] text-slate-300 hover:text-white hover:bg-[#252B36] border border-white/[0.08] transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-500"
+    >
+      <Icon className="w-6 h-6" strokeWidth={1.75} aria-hidden="true" />
+      <span aria-hidden="true" className="absolute inset-0 flex items-center justify-center pt-px text-[10px] font-bold font-mono leading-none">
+        {n}
+      </span>
+    </button>
+  );
+}
+
 export function TransportBar({
   project,
   isPlaying,
@@ -39,6 +63,7 @@ export function TransportBar({
   transpose,
   onTogglePlay,
   onStop,
+  onSkip,
   onSeek,
   onToggleLoop,
   onToggleMetronome,
@@ -110,6 +135,8 @@ export function TransportBar({
               <Square className="w-4 h-4 fill-current" aria-hidden="true" />
             </button>
 
+            {onSkip && <SkipButton seconds={-5} onSkip={onSkip} />}
+
             <button
               type="button"
               onClick={onTogglePlay}
@@ -128,6 +155,8 @@ export function TransportBar({
                 </>
               )}
             </button>
+
+            {onSkip && <SkipButton seconds={5} onSkip={onSkip} />}
 
             <button
               type="button"

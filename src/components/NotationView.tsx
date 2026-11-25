@@ -457,7 +457,7 @@ export function NotationView({
       {/* Top Workspace Control Bar: sticks below the transport while scrolling */}
       <div
         ref={controlsRef}
-        className="sticky z-10 -mx-4 sm:-mx-6 -mt-6 px-4 sm:px-6 py-3 bg-[#0B0D10]/95 backdrop-blur-sm border-b border-white/[0.06]"
+        className="md:sticky z-10 -mx-4 sm:-mx-6 -mt-6 px-4 sm:px-6 py-3 bg-[#0B0D10]/95 backdrop-blur-sm border-b border-white/[0.06]"
         style={{ top: 'calc(var(--sf-header-h, 56px) + var(--sf-transport-h, 0px))' }}
       >
         <div className="flex flex-wrap items-center justify-between gap-4">

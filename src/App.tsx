@@ -58,6 +58,8 @@ import { SettingsView } from './components/SettingsView';
 import { ExportDialog, type ExportTab } from './components/ExportDialog';
 
 const LAST_PROJECT_KEY = 'stemforge_last_project_v1';
+/** How far the transport's back / forward buttons (and the ← / → keys) jump. */
+const SKIP_SECONDS = 5;
 
 function createDefaultMixer(): Record<StemId, StemMixerState> {
   return {
@@ -136,7 +138,7 @@ export default function App() {
   const [notationPart, setNotationPart] = useState<NotationPart>('guitar');
   const [tabEdits, setTabEdits] = useState<TabEdits>({});
   const [barSettings, setBarSettings] = useState<BarSettings>(DEFAULT_BAR_SETTINGS);
-  // Tabs & Sheet: the header, the transport and the part / mode controls stay at the top while scrolling
+  // The header and the transport stay at the top while scrolling (on Tabs & Sheet also the part / mode controls)
   const headerRef = useRef<HTMLElement | null>(null);
   const transportWrapRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -809,6 +811,11 @@ export default function App() {
       if (e.code === 'Space') {
         e.preventDefault();
         void handleTogglePlay();
+      } else if (project && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey && !e.shiftKey) {
+        // back / forward 5 seconds
+        e.preventDefault();
+        const t = engineRef.current?.getCurrentTime() ?? 0;
+        handleSeek(Math.max(0, Math.min(project.duration, t + (e.key === 'ArrowLeft' ? -SKIP_SECONDS : SKIP_SECONDS))));
       } else if (e.key === 'l' || e.key === 'L') {
         setLoopEnabled((prev) => {
           engineRef.current?.setLoop(!prev);
@@ -827,9 +834,9 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleTogglePlay, handleSaveSfg, handleOpenSfg, project, exportState]);
+  }, [handleTogglePlay, handleSaveSfg, handleOpenSfg, project, exportState, handleSeek]);
 
-  useStickyHeightVar(transportWrapRef, '--sf-transport-h', activeView === 'notation' && Boolean(project));
+  useStickyHeightVar(transportWrapRef, '--sf-transport-h', Boolean(project));
 
   // ---------------------------------------------------------------- render
   const songEditing =
@@ -925,11 +932,7 @@ export default function App() {
       )}
 
       {project && (
-        <div
-          ref={transportWrapRef}
-          className={activeView === 'notation' ? 'sticky z-20' : undefined}
-          style={activeView === 'notation' ? { top: 'var(--sf-header-h, 56px)' } : undefined}
-        >
+        <div ref={transportWrapRef} className="md:sticky z-20" style={{ top: 'var(--sf-header-h, 56px)' }}>
           <TransportBar
             project={songProject ?? project}
             isPlaying={isPlaying}
@@ -944,6 +947,10 @@ export default function App() {
             onTogglePlay={() => void handleTogglePlay()}
             onStop={handleStop}
             onSeek={handleSeek}
+            onSkip={(delta) => {
+              const t = engineRef.current?.getCurrentTime() ?? currentTime;
+              handleSeek(Math.max(0, Math.min(project.duration, t + delta)));
+            }}
             onToggleLoop={() => {
               const next = !loopEnabled;
               setLoopEnabled(next);
